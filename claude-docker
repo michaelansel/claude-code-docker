@@ -12,6 +12,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  -d, --dir <path>   Working directory to mount (default: \$PWD)"
+    echo "  -s, --stream       Stream output as JSON (default: buffer until done)"
     echo "  -b, --build        Rebuild the image before running"
     echo "  -h, --help         Show this help"
     echo ""
@@ -23,12 +24,17 @@ usage() {
 
 WORK_DIR="$(pwd)"
 BUILD=false
+STREAM=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -d|--dir)
             WORK_DIR="$2"
             shift 2
+            ;;
+        -s|--stream)
+            STREAM=true
+            shift
             ;;
         -b|--build)
             BUILD=true
@@ -73,4 +79,9 @@ if [[ -f "$USER_CONFIG" ]]; then
     MOUNTS+=(-v "$USER_CONFIG:/home/node/.claude.json")
 fi
 
-exec finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "$*"
+CLAUDE_ARGS=(-p "$*")
+if $STREAM; then
+    CLAUDE_ARGS=(--output-format stream-json --verbose -p "$*")
+fi
+
+exec finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
