@@ -6,14 +6,18 @@ IMAGE_NAME="claude-code"
 CONFIG_DIR="$HOME/.claude-docker"
 CREDENTIALS="$HOME/.claude/.credentials.json"
 USER_CONFIG="$CONFIG_DIR/.claude.json"
+AGENTS_FILE="$SCRIPT_DIR/agents.yaml"
 
 usage() {
     echo "Usage: claude-docker [options] <prompt>"
+    echo "       claude-docker agent <name>     Run a named agent"
+    echo "       claude-docker agent list       List available agents"
     echo ""
     echo "Options:"
     echo "  -d, --dir <path>   Working directory to mount (default: \$PWD)"
     echo "  -s, --stream       Stream formatted output (default: buffer until done)"
     echo "  -sj, --stream-json Stream raw JSON output"
+    echo "  --no-stream        Disable streaming (for agent mode, which streams by default)"
     echo "  -b, --build        Rebuild the image before running"
     echo "  -h, --help         Show this help"
     echo ""
@@ -21,15 +25,68 @@ usage() {
     echo "  claude-docker \"explain this project\""
     echo "  claude-docker -d ~/Code/myproject \"add tests for main.py\""
     echo "  claude-docker --build \"hello\""
+    echo "  claude-docker agent list"
+    echo "  claude-docker agent notes"
+    echo "  claude-docker -b agent notes"
+}
+
+# Look up an agent directory from agents.yaml
+# Uses grep/sed — no yq dependency needed
+agent_lookup() {
+    local name="$1"
+    if [[ ! -f "$AGENTS_FILE" ]]; then
+        echo "Error: agents.yaml not found at $AGENTS_FILE" >&2
+        return 1
+    fi
+    local dir
+    dir=$(sed -n "s/^${name}:[[:space:]]*//p" "$AGENTS_FILE" | head -1)
+    if [[ -z "$dir" ]]; then
+        return 1
+    fi
+    # Expand ~ to $HOME
+    echo "${dir/#\~/$HOME}"
+}
+
+agent_list() {
+    if [[ ! -f "$AGENTS_FILE" ]]; then
+        echo "No agents.yaml found at $AGENTS_FILE" >&2
+        exit 1
+    fi
+    echo "Available agents:"
+    while IFS=: read -r name dir; do
+        # Skip blank lines and comments
+        [[ -z "$name" || "$name" =~ ^[[:space:]]*# ]] && continue
+        # Trim whitespace
+        dir="${dir#"${dir%%[![:space:]]*}"}"
+        printf "  %-15s %s\n" "$name" "$dir"
+    done < "$AGENTS_FILE"
 }
 
 WORK_DIR="$(pwd)"
 BUILD=false
 STREAM=false
 STREAM_RAW=false
+NO_STREAM=false
+AGENT_MODE=false
+AGENT_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        agent)
+            AGENT_MODE=true
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "Error: agent subcommand requires a name or 'list'" >&2
+                echo "Usage: claude-docker agent <name|list>" >&2
+                exit 1
+            fi
+            if [[ "$1" == "list" ]]; then
+                agent_list
+                exit 0
+            fi
+            AGENT_NAME="$1"
+            shift
+            ;;
         -d|--dir)
             WORK_DIR="$2"
             shift 2
@@ -40,6 +97,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -sj|--stream-json)
             STREAM_RAW=true
+            shift
+            ;;
+        --no-stream)
+            NO_STREAM=true
             shift
             ;;
         -b|--build)
@@ -56,7 +117,22 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ $# -eq 0 ]]; then
+# Agent mode: resolve directory and set defaults
+if $AGENT_MODE; then
+    AGENT_DIR=$(agent_lookup "$AGENT_NAME") || {
+        echo "Error: unknown agent '$AGENT_NAME'" >&2
+        echo "" >&2
+        agent_list >&2
+        exit 1
+    }
+    WORK_DIR="$AGENT_DIR"
+    # Agent mode streams by default unless --no-stream is passed
+    if ! $NO_STREAM && ! $STREAM_RAW; then
+        STREAM=true
+    fi
+fi
+
+if ! $AGENT_MODE && [[ $# -eq 0 ]]; then
     usage
     exit 1
 fi
@@ -85,9 +161,15 @@ if [[ -f "$USER_CONFIG" ]]; then
     MOUNTS+=(-v "$USER_CONFIG:/home/node/.claude.json")
 fi
 
-CLAUDE_ARGS=(-p "$*")
+if $AGENT_MODE; then
+    PROMPT="/c3po auto"
+else
+    PROMPT="$*"
+fi
+
+CLAUDE_ARGS=(-p "$PROMPT")
 if $STREAM || $STREAM_RAW; then
-    CLAUDE_ARGS=(--output-format stream-json --verbose -p "$*")
+    CLAUDE_ARGS=(--output-format stream-json --verbose -p "$PROMPT")
 fi
 
 if $STREAM; then
