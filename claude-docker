@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="claude-code"
 CONFIG_DIR="$HOME/.claude-docker"
 CREDENTIALS="$HOME/.claude/.credentials.json"
+USER_CONFIG="$CONFIG_DIR/.claude.json"
 
 usage() {
     echo "Usage: claude-docker [options] <prompt>"
@@ -61,8 +62,15 @@ if $BUILD || ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     finch build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
-exec finch run --rm \
-    -v "$CONFIG_DIR:/home/node/.claude" \
-    -v "$CREDENTIALS:/home/node/.claude/.credentials.json:ro" \
-    -v "$WORK_DIR:/workspace" \
-    "$IMAGE_NAME" "$*"
+MOUNTS=(
+    -v "$CONFIG_DIR:/home/node/.claude"
+    -v "$CREDENTIALS:/home/node/.claude/.credentials.json:ro"
+    -v "$WORK_DIR:/workspace"
+)
+
+# Mount user-level config (.claude.json) if it exists (for MCP servers, etc.)
+if [[ -f "$USER_CONFIG" ]]; then
+    MOUNTS+=(-v "$USER_CONFIG:/home/node/.claude.json")
+fi
+
+exec finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "$*"
