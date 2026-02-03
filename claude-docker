@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+IMAGE_NAME="claude-code"
+CONFIG_DIR="$HOME/.claude-docker"
+CREDENTIALS="$HOME/.claude/.credentials.json"
+
+usage() {
+    echo "Usage: claude-docker [options] <prompt>"
+    echo ""
+    echo "Options:"
+    echo "  -d, --dir <path>   Working directory to mount (default: \$PWD)"
+    echo "  -b, --build        Rebuild the image before running"
+    echo "  -h, --help         Show this help"
+    echo ""
+    echo "Examples:"
+    echo "  claude-docker \"explain this project\""
+    echo "  claude-docker -d ~/Code/myproject \"add tests for main.py\""
+    echo "  claude-docker --build \"hello\""
+}
+
+WORK_DIR="$(pwd)"
+BUILD=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d|--dir)
+            WORK_DIR="$2"
+            shift 2
+            ;;
+        -b|--build)
+            BUILD=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 1
+fi
+
+if [[ ! -f "$CREDENTIALS" ]]; then
+    echo "Error: No credentials found at $CREDENTIALS" >&2
+    echo "Run 'claude' on the host first to authenticate." >&2
+    exit 1
+fi
+
+mkdir -p "$CONFIG_DIR"
+
+if $BUILD || ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    echo "Building $IMAGE_NAME image..." >&2
+    finch build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+fi
+
+exec finch run --rm \
+    -v "$CONFIG_DIR:/home/node/.claude" \
+    -v "$CREDENTIALS:/home/node/.claude/.credentials.json:ro" \
+    -v "$WORK_DIR:/workspace" \
+    "$IMAGE_NAME" "$*"
