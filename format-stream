@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Format claude stream-json output into readable terminal output."""
+import sys
+import json
+
+DIM = "\033[2m"
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+MAGENTA = "\033[35m"
+RESET = "\033[0m"
+
+def format_line(line):
+    line = line.strip()
+    if not line:
+        return None
+
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return line
+
+    t = data.get("type")
+    sub = data.get("subtype", "")
+
+    if t == "system" and sub == "hook_response":
+        name = data.get("hook_name", "")
+        output = data.get("output", "").strip()
+        if output:
+            return f"{DIM}[{name}]{RESET} {output}"
+
+    if t == "system" and sub == "init":
+        mcp = [s["name"] for s in data.get("mcp_servers", []) if s.get("status") == "connected"]
+        model = data.get("model", "")
+        plugins = [p["name"] for p in data.get("plugins", [])]
+        parts = [f"{DIM}model={model}{RESET}"]
+        if mcp:
+            parts.append(f"{DIM}mcp=[{', '.join(mcp)}]{RESET}")
+        if plugins:
+            parts.append(f"{DIM}plugins=[{', '.join(plugins)}]{RESET}")
+        return f"{CYAN}▶ Session started{RESET}  {' '.join(parts)}"
+
+    if t == "assistant":
+        msg = data.get("message", {})
+        contents = msg.get("content", [])
+        parts = []
+        for block in contents:
+            if block.get("type") == "text" and block.get("text"):
+                parts.append(f"{BOLD}{block['text']}{RESET}")
+            elif block.get("type") == "tool_use":
+                name = block.get("name", "")
+                inp = block.get("input", {})
+                # compact summary of tool input
+                summary = ""
+                if "command" in inp:
+                    summary = inp["command"]
+                elif "pattern" in inp:
+                    summary = inp["pattern"]
+                elif "file_path" in inp:
+                    summary = inp["file_path"]
+                elif "message" in inp:
+                    summary = inp["message"][:80]
+                elif "description" in inp:
+                    summary = inp["description"][:80]
+                elif "prompt" in inp:
+                    summary = inp["prompt"][:80]
+                elif "query" in inp:
+                    summary = inp["query"][:80]
+                elif "skill" in inp:
+                    summary = inp["skill"]
+                elif "to" in inp:
+                    summary = f"→ {inp['to']}: {inp.get('response', inp.get('message', ''))[:60]}"
+
+                if summary:
+                    parts.append(f"{YELLOW}⚡ {name}{RESET} {DIM}{summary}{RESET}")
+                else:
+                    parts.append(f"{YELLOW}⚡ {name}{RESET}")
+        if parts:
+            return "\n".join(parts)
+
+    if t == "user" and data.get("tool_use_result"):
+        result = data["tool_use_result"]
+        content = result.get("content", "")
+        if isinstance(content, str) and len(content) > 200:
+            content = content[:200] + "..."
+        if content:
+            return f"{GREEN}  ↳ {content}{RESET}"
+
+    if t == "result":
+        result = data.get("result", "")
+        cost = data.get("total_cost_usd", 0)
+        turns = data.get("num_turns", 0)
+        status = f"{DIM}(turns={turns} cost=${cost:.4f}){RESET}"
+        if sub == "success":
+            return f"\n{CYAN}■ Done{RESET} {status}\n{result}"
+        elif sub == "error_during_execution":
+            errors = data.get("errors", [])
+            err_msg = errors[0] if errors else "unknown error"
+            return f"\n{MAGENTA}■ Error{RESET} {status}\n{err_msg}"
+
+    return None
+
+for line in sys.stdin:
+    out = format_line(line)
+    if out is not None:
+        print(out, flush=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
 IMAGE_NAME="claude-code"
 CONFIG_DIR="$HOME/.claude-docker"
 CREDENTIALS="$HOME/.claude/.credentials.json"
@@ -12,7 +12,8 @@ usage() {
     echo ""
     echo "Options:"
     echo "  -d, --dir <path>   Working directory to mount (default: \$PWD)"
-    echo "  -s, --stream       Stream output as JSON (default: buffer until done)"
+    echo "  -s, --stream       Stream formatted output (default: buffer until done)"
+    echo "  -sj, --stream-json Stream raw JSON output"
     echo "  -b, --build        Rebuild the image before running"
     echo "  -h, --help         Show this help"
     echo ""
@@ -25,6 +26,7 @@ usage() {
 WORK_DIR="$(pwd)"
 BUILD=false
 STREAM=false
+STREAM_RAW=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -s|--stream)
             STREAM=true
+            shift
+            ;;
+        -sj|--stream-json)
+            STREAM_RAW=true
             shift
             ;;
         -b|--build)
@@ -80,8 +86,12 @@ if [[ -f "$USER_CONFIG" ]]; then
 fi
 
 CLAUDE_ARGS=(-p "$*")
-if $STREAM; then
+if $STREAM || $STREAM_RAW; then
     CLAUDE_ARGS=(--output-format stream-json --verbose -p "$*")
 fi
 
-exec finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+if $STREAM; then
+    finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}" | "$SCRIPT_DIR/format-stream"
+else
+    exec finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+fi
