@@ -69,6 +69,7 @@ STREAM_RAW=false
 NO_STREAM=false
 AGENT_MODE=false
 AGENT_NAME=""
+PROJECT_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -126,10 +127,16 @@ if $AGENT_MODE; then
         exit 1
     }
     WORK_DIR="$AGENT_DIR"
+    PROJECT_NAME="$AGENT_NAME"
     # Agent mode streams by default unless --no-stream is passed
     if ! $NO_STREAM && ! $STREAM_RAW; then
         STREAM=true
     fi
+fi
+
+# Default project name to basename of the working directory
+if [[ -z "$PROJECT_NAME" ]]; then
+    PROJECT_NAME="$(basename "$WORK_DIR")"
 fi
 
 if ! $AGENT_MODE && [[ $# -eq 0 ]]; then
@@ -172,6 +179,8 @@ if $STREAM || $STREAM_RAW; then
     CLAUDE_ARGS=(--output-format stream-json --verbose -p "$PROMPT")
 fi
 
+ENV_ARGS=(-e "CLAUDE_PROJECT_NAME=$PROJECT_NAME")
+
 # Give the container a name so we can stop it on interrupt.
 # finch run --rm doesn't stop the container when the host process is killed,
 # so we trap INT/TERM and explicitly run `finch stop` to give the container
@@ -184,8 +193,8 @@ cleanup() {
 trap cleanup EXIT
 
 if $STREAM; then
-    finch run --rm --name "$CONTAINER_NAME" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}" | "$SCRIPT_DIR/format-stream"
+    finch run --rm --name "$CONTAINER_NAME" "${ENV_ARGS[@]}" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}" | "$SCRIPT_DIR/format-stream"
     exit "${PIPESTATUS[0]}"
 else
-    finch run --rm --name "$CONTAINER_NAME" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+    finch run --rm --name "$CONTAINER_NAME" "${ENV_ARGS[@]}" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
 fi

@@ -176,6 +176,19 @@ out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
 assert_contains "has --name flag" "--name claude-code-" "$out"
 teardown
 
+echo "=== agent mode sets CLAUDE_PROJECT_NAME to agent name ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+assert_contains "env has CLAUDE_PROJECT_NAME=notes" "CLAUDE_PROJECT_NAME=notes" "$out"
+teardown
+
+echo "=== direct mode sets CLAUDE_PROJECT_NAME to dir basename ==="
+setup
+out=$(bash "$UNDER_TEST" -d /tmp "hello" 2>&1)
+assert_contains "env has CLAUDE_PROJECT_NAME=tmp" "CLAUDE_PROJECT_NAME=tmp" "$out"
+teardown
+
 echo "=== cleanup trap calls finch stop on signal ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
