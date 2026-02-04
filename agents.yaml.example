@@ -1,0 +1,8 @@
+# Agent registry — maps agent names to working directories.
+# Copy to ~/.claude-docker/agents.yaml and edit.
+#
+# Usage:
+#   claude-docker agent <name>    Run agent attached to its directory
+#   claude-docker agent list      List available agents
+#
+notes: ~/Documents/Notes

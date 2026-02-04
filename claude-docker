@@ -6,7 +6,7 @@ IMAGE_NAME="claude-code"
 CONFIG_DIR="$HOME/.claude-docker"
 CREDENTIALS="$HOME/.claude/.credentials.json"
 USER_CONFIG="$CONFIG_DIR/.claude.json"
-AGENTS_FILE="$SCRIPT_DIR/agents.yaml"
+AGENTS_FILE="$CONFIG_DIR/agents.yaml"
 
 usage() {
     echo "Usage: claude-docker [options] <prompt>"

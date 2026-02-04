@@ -16,6 +16,8 @@ setup() {
     mkdir -p "$TEST_DIR/.claude"
     echo '{}' > "$TEST_DIR/.claude/.credentials.json"
     mkdir -p "$TEST_DIR/.claude-docker"
+    # Copy agents.yaml into the fake config dir
+    cp "$SCRIPT_DIR/agents.yaml.example" "$TEST_DIR/.claude-docker/agents.yaml"
     # Fake finch that logs the command it would run
     cat > "$TEST_DIR/finch" <<'STUB'
 #!/usr/bin/env bash
