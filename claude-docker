@@ -11,7 +11,7 @@ AGENTS_FILE="$CONFIG_DIR/agents.yaml"
 
 usage() {
     echo "Usage: claude-docker [options] <prompt>"
-    echo "       claude-docker setup            Set up authentication token"
+    echo "       claude-docker setup [token]    Set up authentication (provide token manually or extract from TUI)"
     echo "       claude-docker setup-c3po <url> <token>  Install and enroll c3po plugin"
     echo "       claude-docker shell            Interactive shell in container"
     echo "       claude-docker agent <name>     Run a named agent"
@@ -79,23 +79,47 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         setup)
             mkdir -p "$CONFIG_DIR"
+            shift
+            # If token provided as argument, use it directly
+            if [[ $# -gt 0 ]]; then
+                TOKEN="$1"
+                if [[ ! "$TOKEN" =~ ^sk-ant- && ! "$TOKEN" =~ ^sk-at- ]]; then
+                    echo "Error: Token must start with 'sk-ant-' or 'sk-at-'" >&2
+                    exit 1
+                fi
+                echo "$TOKEN" > "$TOKEN_FILE"
+                chmod 600 "$TOKEN_FILE"
+                echo "Token saved to $TOKEN_FILE" >&2
+                exit 0
+            fi
+
+            # Otherwise try to extract from interactive claude setup-token
             echo "Running 'claude setup-token' to generate a long-lived token..." >&2
+            echo "NOTE: Token extraction from TUI is fragile. For best results:" >&2
+            echo "  1. Run: claude setup-token" >&2
+            echo "  2. Copy the token manually" >&2
+            echo "  3. Run: claude-docker setup <your-token>" >&2
+            echo "" >&2
             RAW=$(claude setup-token) || { echo "Error: claude setup-token failed" >&2; exit 1; }
-            # claude setup-token outputs a TUI with ANSI escapes embedded in the
-            # token text itself, so we must strip them and remove whitespace before
-            # extracting the token.
             TOKEN=$(python3 -c "
 import re, sys
 raw = sys.stdin.read()
+# Strip ANSI escape codes but preserve whitespace to maintain token boundaries
 clean = re.sub(r'\x1b\[[^a-zA-Z]*[a-zA-Z]', '', raw)
-clean = clean.replace(' ', '').replace('\n', '').replace('\r', '')
-m = re.search(r'sk-ant-[a-zA-Z0-9_-]+|sk-at-[a-zA-Z0-9_-]+', clean)
+# Look for token followed by whitespace, punctuation, or end of string
+# This prevents matching trailing UI text like 'Storethistokensecurely'
+m = re.search(r'(sk-ant-[a-zA-Z0-9_-]+|sk-at-[a-zA-Z0-9_-]+)(?=\s|[.,!]|\$)', clean)
+if not m:
+    # Fallback: try without boundary check but limit length
+    m = re.search(r'(sk-ant-[a-zA-Z0-9_-]{90,110}|sk-at-[a-zA-Z0-9_-]{90,110})', clean)
 if m:
-    print(m.group(0))
+    print(m.group(1))
 " <<< "$RAW")
             if [[ -z "$TOKEN" ]]; then
                 echo "Error: Could not extract token from claude setup-token output." >&2
-                echo "You can set CLAUDE_CODE_OAUTH_TOKEN manually instead." >&2
+                echo "" >&2
+                echo "Please provide the token manually:" >&2
+                echo "  claude-docker setup <your-token>" >&2
                 exit 1
             fi
             echo "$TOKEN" > "$TOKEN_FILE"
