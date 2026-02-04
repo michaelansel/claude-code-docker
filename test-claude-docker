@@ -20,6 +20,7 @@ setup() {
     cat > "$TEST_DIR/finch" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "image" ]]; then exit 0; fi
+if [[ "${1:-}" == "stop" ]]; then exit 0; fi
 echo "FINCH_ARGS: $*"
 STUB
     chmod +x "$TEST_DIR/finch"
@@ -164,6 +165,50 @@ mkdir -p "$TEST_DIR/Documents/Notes"
 out=$(bash "$UNDER_TEST" -sj agent notes 2>&1)
 assert_contains "uses stream-json" "stream-json" "$out"
 assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
+teardown
+
+echo "=== container gets a --name ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+assert_contains "has --name flag" "--name claude-code-" "$out"
+teardown
+
+echo "=== cleanup trap calls finch stop on signal ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+# Replace finch stub with one that logs stop calls and handles signals like real finch
+cat > "$TEST_DIR/finch" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "image" ]]; then exit 0; fi
+if [[ "${1:-}" == "stop" ]]; then echo "STOP_CALLED: $2" >> "$HOME/finch-stop.log"; exit 0; fi
+# Simulate a long-running container; exit on INT/TERM like real finch would
+if [[ "${1:-}" == "run" ]]; then
+    trap 'exit 130' INT TERM
+    echo "FINCH_ARGS: $*"
+    sleep 60 &
+    wait
+fi
+STUB
+chmod +x "$TEST_DIR/finch"
+# Run claude-docker in background
+bash "$UNDER_TEST" --no-stream agent notes > /dev/null 2>&1 &
+TEST_PID=$!
+sleep 0.5
+# Send TERM to all descendants (finch stub first so it exits, then claude-docker's
+# trap fires). pkill -P finds children of children recursively on macOS.
+# We need the finch stub to exit first so bash can run its trap.
+pkill -TERM -f "sleep 60" 2>/dev/null || true
+sleep 1.5
+if [[ -f "$TEST_DIR/finch-stop.log" ]]; then
+    stop_log=$(cat "$TEST_DIR/finch-stop.log")
+    assert_contains "finch stop called with container name" "claude-code-" "$stop_log"
+else
+    echo "  FAIL: finch stop was never called"
+    FAIL=$((FAIL + 1))
+fi
+kill $TEST_PID 2>/dev/null || true
+wait $TEST_PID 2>/dev/null || true
 teardown
 
 # --- cleanup stray test artifacts ---

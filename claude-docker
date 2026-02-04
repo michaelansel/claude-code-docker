@@ -172,8 +172,20 @@ if $STREAM || $STREAM_RAW; then
     CLAUDE_ARGS=(--output-format stream-json --verbose -p "$PROMPT")
 fi
 
+# Give the container a name so we can stop it on interrupt.
+# finch run --rm doesn't stop the container when the host process is killed,
+# so we trap INT/TERM and explicitly run `finch stop` to give the container
+# a chance to shut down gracefully (important for c3po session hooks).
+CONTAINER_NAME="claude-code-$$"
+
+cleanup() {
+    finch stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
 if $STREAM; then
-    finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}" | "$SCRIPT_DIR/format-stream"
+    finch run --rm --name "$CONTAINER_NAME" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}" | "$SCRIPT_DIR/format-stream"
+    exit "${PIPESTATUS[0]}"
 else
-    exec finch run --rm "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+    finch run --rm --name "$CONTAINER_NAME" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
 fi
