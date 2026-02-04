@@ -284,6 +284,63 @@ kill $TEST_PID 2>/dev/null || true
 wait $TEST_PID 2>/dev/null || true
 teardown
 
+echo "=== .claude.json is auto-created when missing ==="
+setup
+# Remove any pre-existing .claude.json
+rm -f "$TEST_DIR/.claude-docker/.claude.json"
+out=$(bash "$UNDER_TEST" "hello" 2>&1)
+assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/.claude.json" && echo true || echo false)"
+assert_eq ".claude.json contains empty object" "{}" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
+assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+teardown
+
+echo "=== .claude.json is always mounted ==="
+setup
+echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/.claude.json"
+out=$(bash "$UNDER_TEST" "hello" 2>&1)
+assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+teardown
+
+echo "=== setup-c3po requires two arguments ==="
+setup
+rc=0
+out=$(bash "$UNDER_TEST" setup-c3po 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+assert_contains "shows usage" "coordinator_url" "$out"
+teardown
+
+echo "=== setup-c3po with one argument fails ==="
+setup
+rc=0
+out=$(bash "$UNDER_TEST" setup-c3po http://example.com 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+assert_contains "shows usage" "coordinator_url" "$out"
+teardown
+
+echo "=== shell subcommand runs interactive container ==="
+setup
+# Replace finch stub with one that just prints args and exits immediately
+cat > "$TEST_DIR/finch" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "image" ]]; then exit 0; fi
+if [[ "${1:-}" == "stop" ]]; then exit 0; fi
+echo "FINCH_ARGS: $*"
+exit 0
+STUB
+chmod +x "$TEST_DIR/finch"
+out=$(echo "" | bash "$UNDER_TEST" shell 2>&1)
+assert_contains "uses --entrypoint bash" "--entrypoint bash" "$out"
+assert_contains "uses -it" "-it" "$out"
+assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+teardown
+
+echo "=== help shows setup-c3po ==="
+setup
+out=$(bash "$UNDER_TEST" -h 2>&1)
+assert_contains "shows setup-c3po" "setup-c3po" "$out"
+assert_contains "shows shell" "shell" "$out"
+teardown
+
 # --- cleanup stray test artifacts ---
 rm -f "$SCRIPT_DIR/format-stream.test-bak"
 

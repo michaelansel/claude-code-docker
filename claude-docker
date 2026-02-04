@@ -12,6 +12,8 @@ AGENTS_FILE="$CONFIG_DIR/agents.yaml"
 usage() {
     echo "Usage: claude-docker [options] <prompt>"
     echo "       claude-docker setup            Set up authentication token"
+    echo "       claude-docker setup-c3po <url> <token>  Install and enroll c3po plugin"
+    echo "       claude-docker shell            Interactive shell in container"
     echo "       claude-docker agent <name>     Run a named agent"
     echo "       claude-docker agent list       List available agents"
     echo ""
@@ -99,6 +101,87 @@ if m:
             echo "$TOKEN" > "$TOKEN_FILE"
             chmod 600 "$TOKEN_FILE"
             echo "Token saved to $TOKEN_FILE" >&2
+            exit 0
+            ;;
+        setup-c3po)
+            shift
+            if [[ $# -lt 2 ]]; then
+                echo "Usage: claude-docker setup-c3po <coordinator_url> <admin_token>" >&2
+                exit 1
+            fi
+            C3PO_URL="$1"
+            C3PO_TOKEN="$2"
+            shift 2
+
+            mkdir -p "$CONFIG_DIR"
+            [[ -f "$USER_CONFIG" ]] || echo '{}' > "$USER_CONFIG"
+
+            # Build image if needed
+            if $BUILD || ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+                echo "Building $IMAGE_NAME image..." >&2
+                finch build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+            fi
+
+            echo "Installing and enrolling c3po plugin..." >&2
+            finch run --rm -it \
+                --entrypoint bash \
+                -v "$CONFIG_DIR:/home/node/.claude" \
+                -v "$USER_CONFIG:/home/node/.claude.json" \
+                "$IMAGE_NAME" \
+                -c "
+                    set -euo pipefail
+                    echo 'Adding/updating michaelansel marketplace...'
+                    claude plugin marketplace update michaelansel 2>/dev/null \
+                        || claude plugin marketplace add michaelansel/claude-code-plugins
+                    echo 'Installing/updating c3po plugin...'
+                    claude plugin update c3po@michaelansel 2>/dev/null \
+                        || claude plugin install c3po@michaelansel
+                    echo 'Enrolling with coordinator...'
+                    SETUP_PY=\$(find ~/.claude/plugins -path '*/c3po*/setup.py' -print -quit)
+                    if [[ -z \"\$SETUP_PY\" ]]; then
+                        echo 'Error: Could not find c3po setup.py' >&2
+                        exit 1
+                    fi
+                    python3 \"\$SETUP_PY\" --enroll '$C3PO_URL' '$C3PO_TOKEN' --machine docker --pattern 'docker/*'
+                    echo 'Done! c3po plugin installed and enrolled.'
+                "
+            exit 0
+            ;;
+        shell)
+            shift
+            # Collect remaining args but don't require a prompt
+            mkdir -p "$CONFIG_DIR"
+            [[ -f "$USER_CONFIG" ]] || echo '{}' > "$USER_CONFIG"
+
+            # Build image if needed
+            if $BUILD || ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+                echo "Building $IMAGE_NAME image..." >&2
+                finch build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+            fi
+
+            SHELL_MOUNTS=(
+                -v "$CONFIG_DIR:/home/node/.claude"
+                -v "$(pwd):/workspace"
+                -v "$USER_CONFIG:/home/node/.claude.json"
+            )
+
+            # Mount credentials if available
+            if [[ -f "$CREDENTIALS" ]]; then
+                SHELL_MOUNTS+=(-v "$CREDENTIALS:/home/node/.claude/.credentials.json:ro")
+            fi
+
+            SHELL_ENV=()
+            if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+                SHELL_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
+            elif [[ -f "$TOKEN_FILE" ]]; then
+                SHELL_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$(cat "$TOKEN_FILE")")
+            fi
+
+            finch run --rm -it \
+                --entrypoint bash \
+                ${SHELL_ENV[@]+"${SHELL_ENV[@]}"} \
+                "${SHELL_MOUNTS[@]}" \
+                "$IMAGE_NAME"
             exit 0
             ;;
         agent)
@@ -205,10 +288,9 @@ if $HAS_CREDENTIALS_FILE; then
     MOUNTS+=(-v "$CREDENTIALS:/home/node/.claude/.credentials.json:ro")
 fi
 
-# Mount user-level config (.claude.json) if it exists (for MCP servers, etc.)
-if [[ -f "$USER_CONFIG" ]]; then
-    MOUNTS+=(-v "$USER_CONFIG:/home/node/.claude.json")
-fi
+# Ensure user-level config (.claude.json) exists so MCP config persists
+[[ -f "$USER_CONFIG" ]] || echo '{}' > "$USER_CONFIG"
+MOUNTS+=(-v "$USER_CONFIG:/home/node/.claude.json")
 
 if $AGENT_MODE; then
     PROMPT="/c3po auto"
