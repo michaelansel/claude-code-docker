@@ -5,11 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")"
 IMAGE_NAME="claude-code"
 CONFIG_DIR="$HOME/.claude-docker"
 CREDENTIALS="$HOME/.claude/.credentials.json"
+TOKEN_FILE="$CONFIG_DIR/.oauth-token"
 USER_CONFIG="$CONFIG_DIR/.claude.json"
 AGENTS_FILE="$CONFIG_DIR/agents.yaml"
 
 usage() {
     echo "Usage: claude-docker [options] <prompt>"
+    echo "       claude-docker setup            Set up authentication token"
     echo "       claude-docker agent <name>     Run a named agent"
     echo "       claude-docker agent list       List available agents"
     echo ""
@@ -73,6 +75,32 @@ PROJECT_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        setup)
+            mkdir -p "$CONFIG_DIR"
+            echo "Running 'claude setup-token' to generate a long-lived token..." >&2
+            RAW=$(claude setup-token) || { echo "Error: claude setup-token failed" >&2; exit 1; }
+            # claude setup-token outputs a TUI with ANSI escapes embedded in the
+            # token text itself, so we must strip them and remove whitespace before
+            # extracting the token.
+            TOKEN=$(python3 -c "
+import re, sys
+raw = sys.stdin.read()
+clean = re.sub(r'\x1b\[[^a-zA-Z]*[a-zA-Z]', '', raw)
+clean = clean.replace(' ', '').replace('\n', '').replace('\r', '')
+m = re.search(r'sk-ant-[a-zA-Z0-9_-]+|sk-at-[a-zA-Z0-9_-]+', clean)
+if m:
+    print(m.group(0))
+" <<< "$RAW")
+            if [[ -z "$TOKEN" ]]; then
+                echo "Error: Could not extract token from claude setup-token output." >&2
+                echo "You can set CLAUDE_CODE_OAUTH_TOKEN manually instead." >&2
+                exit 1
+            fi
+            echo "$TOKEN" > "$TOKEN_FILE"
+            chmod 600 "$TOKEN_FILE"
+            echo "Token saved to $TOKEN_FILE" >&2
+            exit 0
+            ;;
         agent)
             AGENT_MODE=true
             shift
@@ -144,9 +172,21 @@ if ! $AGENT_MODE && [[ $# -eq 0 ]]; then
     exit 1
 fi
 
-if [[ ! -f "$CREDENTIALS" ]]; then
-    echo "Error: No credentials found at $CREDENTIALS" >&2
-    echo "Run 'claude' on the host first to authenticate." >&2
+HAS_CREDENTIALS_FILE=false
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    : # Token will be passed as env var below
+elif [[ -f "$TOKEN_FILE" ]]; then
+    CLAUDE_CODE_OAUTH_TOKEN=$(cat "$TOKEN_FILE")
+    export CLAUDE_CODE_OAUTH_TOKEN
+elif [[ -f "$CREDENTIALS" ]]; then
+    HAS_CREDENTIALS_FILE=true
+else
+    echo "Error: No Claude Code authentication found." >&2
+    echo "" >&2
+    echo "Run setup to generate and store a token:" >&2
+    echo "  claude-docker setup" >&2
+    echo "" >&2
+    echo "Or set CLAUDE_CODE_OAUTH_TOKEN environment variable manually." >&2
     exit 1
 fi
 
@@ -159,9 +199,11 @@ fi
 
 MOUNTS=(
     -v "$CONFIG_DIR:/home/node/.claude"
-    -v "$CREDENTIALS:/home/node/.claude/.credentials.json:ro"
     -v "$WORK_DIR:/workspace"
 )
+if $HAS_CREDENTIALS_FILE; then
+    MOUNTS+=(-v "$CREDENTIALS:/home/node/.claude/.credentials.json:ro")
+fi
 
 # Mount user-level config (.claude.json) if it exists (for MCP servers, etc.)
 if [[ -f "$USER_CONFIG" ]]; then
@@ -180,6 +222,9 @@ if $STREAM || $STREAM_RAW; then
 fi
 
 ENV_ARGS=(-e "CLAUDE_PROJECT_NAME=$PROJECT_NAME")
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    ENV_ARGS+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
+fi
 
 # Give the container a name so we can stop it on interrupt.
 # finch run --rm doesn't stop the container when the host process is killed,
