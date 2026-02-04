@@ -21,6 +21,9 @@ def format_line(line):
     except json.JSONDecodeError:
         return line
 
+    if not isinstance(data, dict):
+        return None
+
     t = data.get("type")
     sub = data.get("subtype", "")
 
@@ -81,15 +84,26 @@ def format_line(line):
 
     if t == "user" and data.get("tool_use_result"):
         result = data["tool_use_result"]
-        content = result.get("content", "")
-        if isinstance(content, str) and len(content) > 200:
+        if isinstance(result, str):
+            content = result
+        else:
+            content = result.get("content", "")
+        if isinstance(content, list):
+            # content can be a list of blocks like [{"type": "text", "text": "..."}]
+            content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+        if not isinstance(content, str):
+            content = str(content)
+        if len(content) > 200:
             content = content[:200] + "..."
         if content:
             return f"{GREEN}  ↳ {content}{RESET}"
 
     if t == "result":
         result = data.get("result", "")
-        cost = data.get("total_cost_usd", 0)
+        try:
+            cost = float(data.get("total_cost_usd", 0) or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
         turns = data.get("num_turns", 0)
         status = f"{DIM}(turns={turns} cost=${cost:.4f}){RESET}"
         if sub == "success":
@@ -102,6 +116,9 @@ def format_line(line):
     return None
 
 for line in sys.stdin:
-    out = format_line(line)
-    if out is not None:
-        print(out, flush=True)
+    try:
+        out = format_line(line)
+        if out is not None:
+            print(out, flush=True)
+    except Exception:
+        pass
