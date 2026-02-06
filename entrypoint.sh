@@ -62,4 +62,5 @@ if [[ "${CLAUDE_AGENT_MODE:-}" == "1" ]]; then
     fi
 fi
 
+echo "Launching claude..." >&2
 exec claude --dangerously-skip-permissions "$@"
