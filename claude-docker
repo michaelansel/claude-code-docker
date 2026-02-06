@@ -31,9 +31,9 @@ usage() {
     echo ""
     echo "Options:"
     echo "  -d, --dir <path>   Working directory to mount (default: \$PWD)"
-    echo "  -s, --stream       Stream formatted output (default: buffer until done)"
+    echo "  -s, --stream       Stream formatted output (default)"
     echo "  -sj, --stream-json Stream raw JSON output"
-    echo "  --no-stream        Disable streaming (for agent mode, which streams by default)"
+    echo "  --no-stream        Disable streaming (streaming is on by default)"
     echo "  -b, --build        Rebuild the image before running"
     echo "  -h, --help         Show this help"
     echo ""
@@ -80,7 +80,7 @@ agent_list() {
 
 WORK_DIR="$(pwd)"
 BUILD=false
-STREAM=false
+STREAM=true
 STREAM_RAW=false
 NO_STREAM=false
 AGENT_MODE=false
@@ -249,6 +249,7 @@ if m:
             ;;
         --no-stream)
             NO_STREAM=true
+            STREAM=false
             shift
             ;;
         -b|--build)
@@ -275,10 +276,6 @@ if $AGENT_MODE; then
     }
     WORK_DIR="$AGENT_DIR"
     PROJECT_NAME="$AGENT_NAME"
-    # Agent mode streams by default unless --no-stream is passed
-    if ! $NO_STREAM && ! $STREAM_RAW; then
-        STREAM=true
-    fi
 fi
 
 # Default project name to basename of the working directory
