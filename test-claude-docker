@@ -341,6 +341,188 @@ assert_contains "shows setup-c3po" "setup-c3po" "$out"
 assert_contains "shows shell" "shell" "$out"
 teardown
 
+# --- entrypoint.sh tests ---
+
+ENTRYPOINT="$SCRIPT_DIR/entrypoint.sh"
+
+# Helper to set up entrypoint test environment with mock claude
+entrypoint_setup() {
+    TEST_DIR=$(mktemp -d)
+    export HOME="$TEST_DIR"
+    mkdir -p "$TEST_DIR/.claude"
+    # Mock claude that logs its arguments
+    cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_ARGS: $*"
+STUB
+    chmod +x "$TEST_DIR/claude"
+    export PATH="$TEST_DIR:$PATH"
+}
+
+echo "=== entrypoint: no plugins dir skips updates ==="
+entrypoint_setup
+out=$("$ENTRYPOINT" -p "hello" 2>&1)
+assert_contains "calls claude with passthrough args" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+assert_not_contains "no updating message" "Updating plugins" "$out"
+teardown
+
+echo "=== entrypoint: with plugins calls marketplace and plugin update ==="
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude/plugins/c3po@michaelansel"
+out=$("$ENTRYPOINT" -p "hello" 2>&1)
+assert_contains "updating message" "Updating plugins" "$out"
+assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+teardown
+
+echo "=== entrypoint: plugin update failure still launches claude ==="
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude/plugins/c3po@michaelansel"
+# Make claude fail for plugin commands but succeed for the final exec
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "plugin" ]]; then exit 1; fi
+echo "CLAUDE_ARGS: $*"
+STUB
+chmod +x "$TEST_DIR/claude"
+rc=0
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
+assert_exit "exits zero despite plugin failures" 0 "$rc"
+assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+teardown
+
+echo "=== entrypoint: marketplace dedup with two plugins from same marketplace ==="
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude/plugins/c3po@michaelansel"
+mkdir -p "$TEST_DIR/.claude/plugins/other@michaelansel"
+# Track claude calls
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" ]]; then
+    echo "MARKETPLACE_UPDATE: $*" >> "$HOME/claude-calls.log"
+    exit 0
+fi
+if [[ "${1:-}" == "plugin" && "${2:-}" == "update" ]]; then
+    echo "PLUGIN_UPDATE: $*" >> "$HOME/claude-calls.log"
+    exit 0
+fi
+echo "CLAUDE_ARGS: $*"
+STUB
+chmod +x "$TEST_DIR/claude"
+out=$("$ENTRYPOINT" -p "hello" 2>&1)
+mp_count=$(grep -c "MARKETPLACE_UPDATE" "$TEST_DIR/claude-calls.log" 2>/dev/null || echo 0)
+plugin_count=$(grep -c "PLUGIN_UPDATE" "$TEST_DIR/claude-calls.log" 2>/dev/null || echo 0)
+assert_eq "one marketplace update call" "1" "$mp_count"
+assert_eq "two plugin update calls" "2" "$plugin_count"
+teardown
+
+echo "=== entrypoint: c3po creds valid (200) launches claude ==="
+entrypoint_setup
+export CLAUDE_AGENT_MODE=1
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token"}
+JSON
+# Mock jq
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+STUB
+chmod +x "$TEST_DIR/jq"
+# Mock curl returning 200
+cat > "$TEST_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+echo "200"
+STUB
+chmod +x "$TEST_DIR/curl"
+rc=0
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
+assert_exit "exits zero" 0 "$rc"
+assert_contains "checks credentials" "Checking c3po credentials" "$out"
+assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+unset CLAUDE_AGENT_MODE
+teardown
+
+echo "=== entrypoint: c3po creds invalid (401) exits 1 ==="
+entrypoint_setup
+export CLAUDE_AGENT_MODE=1
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "bad-token"}
+JSON
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "bad-token"; exit 0; fi
+STUB
+chmod +x "$TEST_DIR/jq"
+cat > "$TEST_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+echo "401"
+STUB
+chmod +x "$TEST_DIR/curl"
+rc=0
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+assert_contains "invalid credentials error" "credentials are invalid" "$out"
+unset CLAUDE_AGENT_MODE
+teardown
+
+echo "=== entrypoint: c3po unreachable (000) exits 1 ==="
+entrypoint_setup
+export CLAUDE_AGENT_MODE=1
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token"}
+JSON
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+STUB
+chmod +x "$TEST_DIR/jq"
+cat > "$TEST_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+echo "000"
+STUB
+chmod +x "$TEST_DIR/curl"
+rc=0
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+assert_contains "unreachable error" "could not reach c3po coordinator" "$out"
+unset CLAUDE_AGENT_MODE
+teardown
+
+echo "=== entrypoint: no creds file in agent mode exits 1 ==="
+entrypoint_setup
+export CLAUDE_AGENT_MODE=1
+rc=0
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+assert_contains "missing creds error" "Run setup-c3po first" "$out"
+unset CLAUDE_AGENT_MODE
+teardown
+
+echo "=== entrypoint: non-agent mode skips creds check ==="
+entrypoint_setup
+# No creds file, no CLAUDE_AGENT_MODE — should succeed
+rc=0
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
+assert_exit "exits zero" 0 "$rc"
+assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+assert_not_contains "no creds check" "Checking c3po credentials" "$out"
+teardown
+
+echo "=== agent mode passes CLAUDE_AGENT_MODE=1 ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+assert_contains "env has CLAUDE_AGENT_MODE=1" "CLAUDE_AGENT_MODE=1" "$out"
+teardown
+
+echo "=== direct mode does not pass CLAUDE_AGENT_MODE ==="
+setup
+out=$(bash "$UNDER_TEST" "hello" 2>&1)
+assert_not_contains "no CLAUDE_AGENT_MODE" "CLAUDE_AGENT_MODE" "$out"
+teardown
+
 # --- cleanup stray test artifacts ---
 rm -f "$SCRIPT_DIR/format-stream.test-bak"
 

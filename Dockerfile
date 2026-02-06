@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   python3 \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 USER node
 
 ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
@@ -22,4 +25,4 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 WORKDIR /workspace
 
-ENTRYPOINT ["claude", "--dangerously-skip-permissions"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

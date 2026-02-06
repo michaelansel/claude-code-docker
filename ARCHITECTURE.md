@@ -5,6 +5,7 @@
 - **`claude-docker`** (bash) — Main CLI entry point. Parses args, resolves agents, builds/runs Finch containers with proper mounts for credentials and config.
 - **`format-stream`** (Python) — Reads Claude's `stream-json` output from stdin and formats it with ANSI colors for terminal display. Handles system, assistant, user (tool results), and result message types.
 - **`test-claude-docker`** (bash) — Self-contained test suite with no external framework. Mocks `finch` and `format-stream` as stub scripts in `$PATH`, validates argument parsing and command construction.
+- **`entrypoint.sh`** (bash) — Container entrypoint. Updates plugins and validates c3po credentials (agent mode) before launching claude.
 - **`Dockerfile`** — Node 20-slim base, installs claude-code globally. Version configurable via `CLAUDE_CODE_VERSION` build arg.
 
 ## Subcommands
@@ -34,6 +35,21 @@ Checked in priority order:
 | `~/.claude-docker/.claude.json` | `/home/node/.claude.json` | MCP server config; auto-created if missing |
 | `$WORK_DIR` | `/workspace` | Working directory |
 | `~/.claude/.credentials.json` | `/home/node/.claude/.credentials.json` | Read-only; only if using credentials file auth |
+
+## Pre-launch Checks
+
+The container entrypoint (`entrypoint.sh`) runs checks before launching claude:
+
+| Mode | Plugin updates | C3PO credential check |
+|------|---------------|----------------------|
+| `claude-docker "prompt"` | Yes (best-effort) | No |
+| `claude-docker agent <name>` | Yes (best-effort) | Yes (hard-fail) |
+| `claude-docker shell` | No (bypasses entrypoint) | No |
+| `claude-docker setup-c3po` | No (bypasses entrypoint) | No |
+
+- Plugin updates discover installed plugins from `~/.claude/plugins/` and update each via `claude plugin update`. Failures are ignored.
+- C3PO credential validation (agent mode only) checks `c3po-credentials.json` and pings the coordinator. Invalid or missing credentials abort the launch.
+- `--entrypoint bash` overrides (used by `shell` and `setup-c3po`) bypass all pre-launch checks.
 
 ## Container Lifecycle
 
