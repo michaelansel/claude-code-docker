@@ -561,7 +561,7 @@ chmod +x "$TEST_DIR/curl"
 rc=0
 out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
 assert_exit "exits non-zero" 1 "$rc"
-assert_contains "invalid credentials error" "credentials are invalid" "$out"
+assert_contains "invalid credentials error" "HTTP 401" "$out"
 unset CLAUDE_AGENT_MODE
 teardown
 

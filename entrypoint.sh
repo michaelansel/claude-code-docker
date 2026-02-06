@@ -44,11 +44,11 @@ if [[ "${CLAUDE_AGENT_MODE:-}" == "1" ]]; then
                 -H "Authorization: Bearer $api_token" \
                 -H "X-Machine-Name: docker" \
                 "$coordinator_url/agent/mcp" 2>/dev/null) || true
-            if [[ "$status" == "401" || "$status" == "403" ]]; then
-                echo "ERROR: c3po credentials are invalid (HTTP $status). Re-run setup-c3po." >&2
-                exit 1
-            elif [[ "$status" == "000" ]]; then
+            if [[ "$status" == "000" ]]; then
                 echo "ERROR: could not reach c3po coordinator at $coordinator_url" >&2
+                exit 1
+            elif [[ ! "$status" =~ ^2 ]]; then
+                echo "ERROR: c3po coordinator returned HTTP $status. Re-run setup-c3po or check coordinator health." >&2
                 exit 1
             fi
         else
