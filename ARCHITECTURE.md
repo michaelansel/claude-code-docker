@@ -51,6 +51,16 @@ The container entrypoint (`entrypoint.sh`) runs checks before launching claude:
 - C3PO credential validation (agent mode only) checks `c3po-credentials.json` and pings the coordinator. Invalid or missing credentials abort the launch.
 - `--entrypoint bash` overrides (used by `shell` and `setup-c3po`) bypass all pre-launch checks.
 
+## Image Auto-rebuild
+
+The image is automatically rebuilt when build inputs change. A SHA-256 hash of `Dockerfile` and `entrypoint.sh` is embedded as a `build.hash` label in the image at build time. On each launch, the hash is recomputed from the source files and compared to the image label. A rebuild is triggered when:
+
+- The image doesn't exist
+- The hash doesn't match (build inputs changed, e.g. after `git pull`)
+- The `-b` / `--build` flag is passed
+
+This avoids unnecessary rebuilds when only non-image files change (tests, docs, scripts).
+
 ## Container Lifecycle
 
 - Containers are named `claude-code-$$` (PID-based) for identification

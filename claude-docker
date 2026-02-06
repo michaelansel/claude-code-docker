@@ -9,6 +9,18 @@ TOKEN_FILE="$CONFIG_DIR/.oauth-token"
 USER_CONFIG="$CONFIG_DIR/.claude.json"
 AGENTS_FILE="$CONFIG_DIR/agents.yaml"
 
+build_hash() {
+    cat "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR/entrypoint.sh" | shasum -a 256 | cut -d' ' -f1
+}
+
+needs_rebuild() {
+    if $BUILD; then return 0; fi
+    if ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then return 0; fi
+    local image_hash
+    image_hash=$(finch image inspect "$IMAGE_NAME" --format '{{index .Config.Labels "build.hash"}}' 2>/dev/null) || true
+    [[ "$image_hash" != "$(build_hash)" ]]
+}
+
 usage() {
     echo "Usage: claude-docker [options] <prompt>"
     echo "       claude-docker setup [token]    Set up authentication (provide token manually or extract from TUI)"
@@ -141,9 +153,9 @@ if m:
             [[ -f "$USER_CONFIG" ]] || echo '{}' > "$USER_CONFIG"
 
             # Build image if needed
-            if $BUILD || ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+            if needs_rebuild; then
                 echo "Building $IMAGE_NAME image..." >&2
-                finch build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+                finch build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
             fi
 
             echo "Installing and enrolling c3po plugin..." >&2
@@ -178,9 +190,9 @@ if m:
             [[ -f "$USER_CONFIG" ]] || echo '{}' > "$USER_CONFIG"
 
             # Build image if needed
-            if $BUILD || ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+            if needs_rebuild; then
                 echo "Building $IMAGE_NAME image..." >&2
-                finch build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+                finch build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
             fi
 
             SHELL_MOUNTS=(
@@ -299,9 +311,9 @@ fi
 
 mkdir -p "$CONFIG_DIR"
 
-if $BUILD || ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+if needs_rebuild; then
     echo "Building $IMAGE_NAME image..." >&2
-    finch build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+    finch build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
 MOUNTS=(
