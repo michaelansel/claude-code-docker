@@ -42,11 +42,12 @@ if [[ "${CLAUDE_AGENT_MODE:-}" == "1" ]]; then
             echo "Checking c3po credentials..." >&2
             status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
                 -H "Authorization: Bearer $api_token" \
-                -H "X-Machine-Name: docker" \
-                -H "Accept: text/event-stream" \
-                "$coordinator_url/agent/mcp" 2>/dev/null) || true
+                "$coordinator_url/agent/api/validate?machine_name=docker" 2>/dev/null) || true
             if [[ "$status" == "000" ]]; then
                 echo "ERROR: could not reach c3po coordinator at $coordinator_url" >&2
+                exit 1
+            elif [[ "$status" == "403" ]]; then
+                echo "ERROR: c3po token does not authorize docker agents. Re-run setup-c3po with a docker/* scoped key." >&2
                 exit 1
             elif [[ ! "$status" =~ ^2 ]]; then
                 echo "ERROR: c3po coordinator returned HTTP $status. Re-run setup-c3po or check coordinator health." >&2

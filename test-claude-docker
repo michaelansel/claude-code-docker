@@ -565,6 +565,30 @@ assert_contains "invalid credentials error" "HTTP 401" "$out"
 unset CLAUDE_AGENT_MODE
 teardown
 
+echo "=== entrypoint: c3po pattern mismatch (403) exits 1 ==="
+entrypoint_setup
+export CLAUDE_AGENT_MODE=1
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token"}
+JSON
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+STUB
+chmod +x "$TEST_DIR/jq"
+cat > "$TEST_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+echo "403"
+STUB
+chmod +x "$TEST_DIR/curl"
+rc=0
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+assert_contains "pattern mismatch error" "does not authorize docker agents" "$out"
+unset CLAUDE_AGENT_MODE
+teardown
+
 echo "=== entrypoint: c3po unreachable (000) exits 1 ==="
 entrypoint_setup
 export CLAUDE_AGENT_MODE=1
