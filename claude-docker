@@ -346,6 +346,9 @@ fi
 if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
     ENV_ARGS+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
 fi
+if [[ -n "${C3PO_DEBUG:-}" ]]; then
+    ENV_ARGS+=(-e "C3PO_DEBUG=$C3PO_DEBUG")
+fi
 
 # Give the container a name so we can stop it on interrupt.
 # finch run --rm doesn't stop the container when the host process is killed,
