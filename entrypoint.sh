@@ -43,6 +43,7 @@ if [[ "${CLAUDE_AGENT_MODE:-}" == "1" ]]; then
             status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
                 -H "Authorization: Bearer $api_token" \
                 -H "X-Machine-Name: docker" \
+                -H "Accept: text/event-stream" \
                 "$coordinator_url/agent/mcp" 2>/dev/null) || true
             if [[ "$status" == "000" ]]; then
                 echo "ERROR: could not reach c3po coordinator at $coordinator_url" >&2
