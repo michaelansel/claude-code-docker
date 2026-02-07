@@ -294,6 +294,14 @@ kill $TEST_PID 2>/dev/null || true
 wait $TEST_PID 2>/dev/null || true
 teardown
 
+echo "=== container-CLAUDE.md is copied to config dir ==="
+setup
+out=$(bash "$UNDER_TEST" "hello" 2>&1)
+assert_eq "CLAUDE.md exists in config dir" "true" "$(test -f "$TEST_DIR/.claude-docker/CLAUDE.md" && echo true || echo false)"
+assert_contains "CLAUDE.md has git guidance" "Git is not configured" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
+assert_contains "CLAUDE.md has no-commit guidance" "do NOT commit" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
+teardown
+
 echo "=== .claude.json is auto-created when missing ==="
 setup
 # Remove any pre-existing .claude.json

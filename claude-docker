@@ -315,6 +315,7 @@ else
 fi
 
 mkdir -p "$CONFIG_DIR"
+cp "$SCRIPT_DIR/container-CLAUDE.md" "$CONFIG_DIR/CLAUDE.md"
 
 if needs_rebuild; then
     echo "Building $IMAGE_NAME image..." >&2
