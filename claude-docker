@@ -9,15 +9,24 @@ TOKEN_FILE="$CONFIG_DIR/.oauth-token"
 USER_CONFIG="$CONFIG_DIR/.claude.json"
 AGENTS_FILE="$CONFIG_DIR/agents.yaml"
 
+if command -v docker &>/dev/null; then
+    CONTAINER_RT=docker
+elif command -v finch &>/dev/null; then
+    CONTAINER_RT=finch
+else
+    echo "Error: No container runtime found. Install docker or finch." >&2
+    exit 1
+fi
+
 build_hash() {
     cat "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR/entrypoint.sh" | shasum -a 256 | cut -d' ' -f1
 }
 
 needs_rebuild() {
     if $BUILD; then return 0; fi
-    if ! finch image inspect "$IMAGE_NAME" >/dev/null 2>&1; then return 0; fi
+    if ! $CONTAINER_RT image inspect "$IMAGE_NAME" >/dev/null 2>&1; then return 0; fi
     local image_hash
-    image_hash=$(finch image inspect "$IMAGE_NAME" --format '{{index .Config.Labels "build.hash"}}' 2>/dev/null) || true
+    image_hash=$($CONTAINER_RT image inspect "$IMAGE_NAME" --format '{{index .Config.Labels "build.hash"}}' 2>/dev/null) || true
     [[ "$image_hash" != "$(build_hash)" ]]
 }
 
@@ -156,11 +165,11 @@ if m:
             # Build image if needed
             if needs_rebuild; then
                 echo "Building $IMAGE_NAME image..." >&2
-                finch build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
+                $CONTAINER_RT build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
             fi
 
             echo "Installing and enrolling c3po plugin..." >&2
-            finch run --rm -it \
+            $CONTAINER_RT run --rm -it \
                 --entrypoint bash \
                 -v "$CONFIG_DIR:/home/node/.claude" \
                 -v "$USER_CONFIG:/home/node/.claude.json" \
@@ -200,7 +209,7 @@ p.write_text(json.dumps(d, indent=2) + '\\\n')
             # Build image if needed
             if needs_rebuild; then
                 echo "Building $IMAGE_NAME image..." >&2
-                finch build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
+                $CONTAINER_RT build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
             fi
 
             SHELL_MOUNTS=(
@@ -221,7 +230,7 @@ p.write_text(json.dumps(d, indent=2) + '\\\n')
                 SHELL_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$(cat "$TOKEN_FILE")")
             fi
 
-            finch run --rm -it \
+            $CONTAINER_RT run --rm -it \
                 --entrypoint bash \
                 ${SHELL_ENV[@]+"${SHELL_ENV[@]}"} \
                 "${SHELL_MOUNTS[@]}" \
@@ -319,7 +328,7 @@ cp "$SCRIPT_DIR/container-CLAUDE.md" "$CONFIG_DIR/CLAUDE.md"
 
 if needs_rebuild; then
     echo "Building $IMAGE_NAME image..." >&2
-    finch build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
+    $CONTAINER_RT build --label "build.hash=$(build_hash)" -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
 MOUNTS=(
@@ -357,19 +366,18 @@ if [[ -n "${C3PO_DEBUG:-}" ]]; then
 fi
 
 # Give the container a name so we can stop it on interrupt.
-# finch run --rm doesn't stop the container when the host process is killed,
-# so we trap INT/TERM and explicitly run `finch stop` to give the container
-# a chance to shut down gracefully (important for c3po session hooks).
+# Container runtime's --rm doesn't stop the container when the host
+# process is killed, so we trap and explicitly stop for graceful shutdown.
 CONTAINER_NAME="claude-code-$$"
 
 cleanup() {
-    finch stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    $CONTAINER_RT stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 if $STREAM; then
-    finch run --rm --name "$CONTAINER_NAME" "${ENV_ARGS[@]}" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}" | "$SCRIPT_DIR/format-stream"
+    $CONTAINER_RT run --rm --name "$CONTAINER_NAME" "${ENV_ARGS[@]}" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}" | "$SCRIPT_DIR/format-stream"
     exit "${PIPESTATUS[0]}"
 else
-    finch run --rm --name "$CONTAINER_NAME" "${ENV_ARGS[@]}" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+    $CONTAINER_RT run --rm --name "$CONTAINER_NAME" "${ENV_ARGS[@]}" "${MOUNTS[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
 fi

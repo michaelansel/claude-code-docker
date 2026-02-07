@@ -2,9 +2,9 @@
 
 ## Files
 
-- **`claude-docker`** (bash) — Main CLI entry point. Parses args, resolves agents, builds/runs Finch containers with proper mounts for credentials and config.
+- **`claude-docker`** (bash) — Main CLI entry point. Parses args, resolves agents, builds/runs containers (Docker or Finch) with proper mounts for credentials and config.
 - **`format-stream`** (Python) — Reads Claude's `stream-json` output from stdin and formats it with ANSI colors for terminal display. Handles system, assistant, user (tool results), and result message types.
-- **`test-claude-docker`** (bash) — Self-contained test suite with no external framework. Mocks `finch` and `format-stream` as stub scripts in `$PATH`, validates argument parsing and command construction.
+- **`test-claude-docker`** (bash) — Self-contained test suite with no external framework. Mocks the container runtime and `format-stream` as stub scripts in `$PATH`, validates argument parsing and command construction.
 - **`entrypoint.sh`** (bash) — Container entrypoint. Updates plugins and validates c3po credentials (agent mode) before launching claude.
 - **`Dockerfile`** — Node 20-slim base, installs claude-code globally. Version configurable via `CLAUDE_CODE_VERSION` build arg.
 
@@ -64,14 +64,14 @@ This avoids unnecessary rebuilds when only non-image files change (tests, docs, 
 ## Container Lifecycle
 
 - Containers are named `claude-code-$$` (PID-based) for identification
-- An EXIT/INT/TERM trap calls `finch stop` for graceful shutdown (important for c3po session hooks)
+- An EXIT/INT/TERM trap calls container stop for graceful shutdown (important for c3po session hooks)
 - `--rm` ensures containers are cleaned up after exit
 
 ## Streaming
 
 - **Direct mode**: buffers output by default. Use `-s` for formatted streaming or `-sj` for raw JSON.
 - **Agent mode**: streams formatted output by default. Use `--no-stream` to disable.
-- Streaming pipes `finch run` output through `format-stream`. Exit code is preserved via `PIPESTATUS[0]`.
+- Streaming pipes container run output through `format-stream`. Exit code is preserved via `PIPESTATUS[0]`.
 
 ## Config Paths
 

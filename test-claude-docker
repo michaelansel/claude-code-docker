@@ -14,6 +14,17 @@ current_build_hash() {
     cat "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR/entrypoint.sh" | shasum -a 256 | cut -d' ' -f1
 }
 
+# Write a runtime stub (docker/finch) to $TEST_DIR with given body.
+# Usage: write_rt_stub <body>
+# Writes the same stub as both $TEST_DIR/docker and $TEST_DIR/finch.
+write_rt_stubs() {
+    local body="$1"
+    for rt in docker finch; do
+        echo "$body" > "$TEST_DIR/$rt"
+        chmod +x "$TEST_DIR/$rt"
+    done
+}
+
 setup() {
     TEST_DIR=$(mktemp -d)
     # Fake credentials so the script doesn't bail early
@@ -25,15 +36,15 @@ setup() {
     # Compute expected hash so the default stub returns a matching hash
     local expected_hash
     expected_hash=$(current_build_hash)
-    # Fake finch that logs the command it would run
-    cat > "$TEST_DIR/finch" <<STUB
+    # Fake container runtime stubs that log the command they would run
+    write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
 if [[ "\${1:-}" == "image" ]]; then exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
-echo "FINCH_ARGS: \$*"
+echo "RT_ARGS: \$*"
 STUB
-    chmod +x "$TEST_DIR/finch"
+)"
     # Fake format-stream
     cat > "$TEST_DIR/format-stream" <<'STUB'
 #!/usr/bin/env bash
@@ -142,7 +153,7 @@ teardown
 echo "=== direct prompt passes through ==="
 setup
 out=$(bash "$UNDER_TEST" "hello world" 2>&1)
-assert_contains "prompt in finch args" "hello world" "$out"
+assert_contains "prompt in runtime args" "hello world" "$out"
 teardown
 
 echo "=== direct prompt with -s streams ==="
@@ -255,39 +266,39 @@ assert_contains "uses env var token" "CLAUDE_CODE_OAUTH_TOKEN=env-token-789" "$o
 assert_not_contains "does not use file token" "file-token-456" "$out"
 teardown
 
-echo "=== cleanup trap calls finch stop on signal ==="
+echo "=== cleanup trap calls container stop on signal ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-# Replace finch stub with one that logs stop calls and handles signals like real finch
+# Replace stubs with ones that log stop calls and handle signals
 expected_hash=$(current_build_hash)
-cat > "$TEST_DIR/finch" <<STUB
+write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
 if [[ "\${1:-}" == "image" ]]; then exit 0; fi
-if [[ "\${1:-}" == "stop" ]]; then echo "STOP_CALLED: \$2" >> "\$HOME/finch-stop.log"; exit 0; fi
-# Simulate a long-running container; exit on INT/TERM like real finch would
+if [[ "\${1:-}" == "stop" ]]; then echo "STOP_CALLED: \$2" >> "\$HOME/rt-stop.log"; exit 0; fi
+# Simulate a long-running container; exit on INT/TERM like real runtime would
 if [[ "\${1:-}" == "run" ]]; then
     trap 'exit 130' INT TERM
-    echo "FINCH_ARGS: \$*"
+    echo "RT_ARGS: \$*"
     sleep 60 &
     wait
 fi
 STUB
-chmod +x "$TEST_DIR/finch"
+)"
 # Run claude-docker in background
 bash "$UNDER_TEST" --no-stream agent notes > /dev/null 2>&1 &
 TEST_PID=$!
 sleep 0.5
-# Send TERM to all descendants (finch stub first so it exits, then claude-docker's
+# Send TERM to all descendants (runtime stub first so it exits, then claude-docker's
 # trap fires). pkill -P finds children of children recursively on macOS.
-# We need the finch stub to exit first so bash can run its trap.
+# We need the runtime stub to exit first so bash can run its trap.
 pkill -TERM -f "sleep 60" 2>/dev/null || true
 sleep 1.5
-if [[ -f "$TEST_DIR/finch-stop.log" ]]; then
-    stop_log=$(cat "$TEST_DIR/finch-stop.log")
-    assert_contains "finch stop called with container name" "claude-code-" "$stop_log"
+if [[ -f "$TEST_DIR/rt-stop.log" ]]; then
+    stop_log=$(cat "$TEST_DIR/rt-stop.log")
+    assert_contains "container stop called with container name" "claude-code-" "$stop_log"
 else
-    echo "  FAIL: finch stop was never called"
+    echo "  FAIL: container stop was never called"
     FAIL=$((FAIL + 1))
 fi
 kill $TEST_PID 2>/dev/null || true
@@ -337,17 +348,17 @@ teardown
 
 echo "=== shell subcommand runs interactive container ==="
 setup
-# Replace finch stub with one that just prints args and exits immediately
+# Replace stubs with ones that just print args and exit immediately
 expected_hash=$(current_build_hash)
-cat > "$TEST_DIR/finch" <<STUB
+write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
 if [[ "\${1:-}" == "image" ]]; then exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
-echo "FINCH_ARGS: \$*"
+echo "RT_ARGS: \$*"
 exit 0
 STUB
-chmod +x "$TEST_DIR/finch"
+)"
 out=$(echo "" | bash "$UNDER_TEST" shell 2>&1)
 assert_contains "uses --entrypoint bash" "--entrypoint bash" "$out"
 assert_contains "uses -it" "-it" "$out"
@@ -365,18 +376,15 @@ teardown
 
 echo "=== stale image triggers rebuild ==="
 setup
-# Override finch stub to return a stale hash
-cat > "$TEST_DIR/finch" <<'STUB'
-#!/usr/bin/env bash
+# Override stubs to return a stale hash
+write_rt_stubs '#!/usr/bin/env bash
 if [[ "${1:-}" == "image" && "$*" == *"--format"* ]]; then echo "stale-hash-000"; exit 0; fi
 if [[ "${1:-}" == "image" ]]; then exit 0; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
-if [[ "${1:-}" == "build" ]]; then echo "FINCH_BUILD: $*"; exit 0; fi
-echo "FINCH_ARGS: $*"
-STUB
-chmod +x "$TEST_DIR/finch"
+if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
+echo "RT_ARGS: $*"'
 out=$(bash "$UNDER_TEST" "hello" 2>&1)
-assert_contains "triggers build" "FINCH_BUILD:" "$out"
+assert_contains "triggers build" "RT_BUILD:" "$out"
 assert_contains "build includes --label" "--label" "$out"
 assert_contains "build includes build.hash" "build.hash=" "$out"
 teardown
@@ -384,65 +392,59 @@ teardown
 echo "=== fresh image skips rebuild ==="
 setup
 # Default stub already returns the correct hash
-# Override finch to log build calls so we can verify build is NOT called
+# Override stubs to log build calls so we can verify build is NOT called
 expected_hash=$(current_build_hash)
-cat > "$TEST_DIR/finch" <<STUB
+write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
 if [[ "\${1:-}" == "image" ]]; then exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
-if [[ "\${1:-}" == "build" ]]; then echo "FINCH_BUILD: \$*"; exit 0; fi
-echo "FINCH_ARGS: \$*"
+if [[ "\${1:-}" == "build" ]]; then echo "RT_BUILD: \$*"; exit 0; fi
+echo "RT_ARGS: \$*"
 STUB
-chmod +x "$TEST_DIR/finch"
+)"
 out=$(bash "$UNDER_TEST" "hello" 2>&1)
-assert_not_contains "no build triggered" "FINCH_BUILD:" "$out"
+assert_not_contains "no build triggered" "RT_BUILD:" "$out"
 teardown
 
 echo "=== missing image triggers rebuild ==="
 setup
-# Override finch stub: image inspect fails (image doesn't exist)
-cat > "$TEST_DIR/finch" <<'STUB'
-#!/usr/bin/env bash
+# Override stubs: image inspect fails (image doesn't exist)
+write_rt_stubs '#!/usr/bin/env bash
 if [[ "${1:-}" == "image" ]]; then exit 1; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
-if [[ "${1:-}" == "build" ]]; then echo "FINCH_BUILD: $*"; exit 0; fi
-echo "FINCH_ARGS: $*"
-STUB
-chmod +x "$TEST_DIR/finch"
+if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
+echo "RT_ARGS: $*"'
 out=$(bash "$UNDER_TEST" "hello" 2>&1)
-assert_contains "triggers build" "FINCH_BUILD:" "$out"
+assert_contains "triggers build" "RT_BUILD:" "$out"
 teardown
 
 echo "=== -b flag always rebuilds even with matching hash ==="
 setup
 # Default stub returns matching hash, but -b should force rebuild
 expected_hash=$(current_build_hash)
-cat > "$TEST_DIR/finch" <<STUB
+write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
 if [[ "\${1:-}" == "image" ]]; then exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
-if [[ "\${1:-}" == "build" ]]; then echo "FINCH_BUILD: \$*"; exit 0; fi
-echo "FINCH_ARGS: \$*"
+if [[ "\${1:-}" == "build" ]]; then echo "RT_BUILD: \$*"; exit 0; fi
+echo "RT_ARGS: \$*"
 STUB
-chmod +x "$TEST_DIR/finch"
+)"
 out=$(bash "$UNDER_TEST" -b "hello" 2>&1)
-assert_contains "build triggered with -b" "FINCH_BUILD:" "$out"
+assert_contains "build triggered with -b" "RT_BUILD:" "$out"
 assert_contains "build includes --label" "--label" "$out"
 teardown
 
 echo "=== build passes correct hash label ==="
 setup
-cat > "$TEST_DIR/finch" <<'STUB'
-#!/usr/bin/env bash
+write_rt_stubs '#!/usr/bin/env bash
 if [[ "${1:-}" == "image" && "$*" == *"--format"* ]]; then echo "stale-hash-000"; exit 0; fi
 if [[ "${1:-}" == "image" ]]; then exit 0; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
-if [[ "${1:-}" == "build" ]]; then echo "FINCH_BUILD: $*"; exit 0; fi
-echo "FINCH_ARGS: $*"
-STUB
-chmod +x "$TEST_DIR/finch"
+if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
+echo "RT_ARGS: $*"'
 out=$(bash "$UNDER_TEST" "hello" 2>&1)
 expected_hash=$(current_build_hash)
 assert_contains "build label has correct hash" "build.hash=$expected_hash" "$out"

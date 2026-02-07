@@ -15,7 +15,7 @@ A bash/Python wrapper for running Claude Code inside Docker containers (via Finc
 
 **Build the container image:**
 ```bash
-finch build -t claude-code .
+docker build -t claude-code .
 ```
 
 ## Conventions
@@ -24,6 +24,6 @@ finch build -t claude-code .
 - No external dependencies beyond standard Unix tools (bash, sed, grep, Python3)
 - Tests mock external binaries by prepending fake scripts to `$PATH`
 - `PIPESTATUS[0]` preserves exit codes through stream pipes
-- Uses **Finch** (not Docker) as the container runtime
+- Uses **Docker** (preferred) or **Finch** as the container runtime
 - Agent registry (`agents.yaml`) is parsed with sed/grep — no yq dependency
 - Prefer CLI commands and exit codes over parsing internal file formats

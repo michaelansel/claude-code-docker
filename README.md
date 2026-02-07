@@ -1,10 +1,10 @@
 # claude-code-docker
 
-Run Claude Code inside isolated Finch/Docker containers with credential management, streaming output, and multi-agent support via c3po.
+Run Claude Code inside isolated Docker/Finch containers with credential management, streaming output, and multi-agent support via c3po.
 
 ## Prerequisites
 
-- [Finch](https://github.com/runfinch/finch) (or Docker)
+- Docker or [Finch](https://github.com/runfinch/finch)
 - Claude Code authentication (one of):
   - OAuth token via `claude-docker setup`
   - `CLAUDE_CODE_OAUTH_TOKEN` environment variable
@@ -22,7 +22,7 @@ ln -s /path/to/claude-code-docker/format-stream ~/.local/bin/format-stream
 Build the container image (or use `-b` to auto-build on first run):
 
 ```bash
-finch build -t claude-code .
+docker build -t claude-code .
 ```
 
 ## Setup
