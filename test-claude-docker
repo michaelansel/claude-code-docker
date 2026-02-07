@@ -525,6 +525,7 @@ cat > "$TEST_DIR/jq" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
 if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
 STUB
 chmod +x "$TEST_DIR/jq"
 # Mock curl returning 200
@@ -551,6 +552,7 @@ cat > "$TEST_DIR/jq" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
 if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "bad-token"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
 STUB
 chmod +x "$TEST_DIR/jq"
 cat > "$TEST_DIR/curl" <<'STUB'
@@ -575,6 +577,7 @@ cat > "$TEST_DIR/jq" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
 if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
 STUB
 chmod +x "$TEST_DIR/jq"
 cat > "$TEST_DIR/curl" <<'STUB'
@@ -599,6 +602,7 @@ cat > "$TEST_DIR/jq" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "-r" && "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
 if [[ "$1" == "-r" && "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+if [[ "$1" == "-r" && "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
 STUB
 chmod +x "$TEST_DIR/jq"
 cat > "$TEST_DIR/curl" <<'STUB'

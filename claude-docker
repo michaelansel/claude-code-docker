@@ -147,6 +147,7 @@ if m:
             fi
             C3PO_URL="$1"
             C3PO_TOKEN="$2"
+            MACHINE_NAME="$(hostname)-docker"
             shift 2
 
             mkdir -p "$CONFIG_DIR"
@@ -178,8 +179,15 @@ if m:
                         echo 'Error: Could not find c3po setup.py' >&2
                         exit 1
                     fi
-                    python3 \"\$SETUP_PY\" --enroll '$C3PO_URL' '$C3PO_TOKEN' --machine docker --pattern 'docker/*'
+                    python3 \"\$SETUP_PY\" --enroll '$C3PO_URL' '$C3PO_TOKEN' --machine '$MACHINE_NAME' --pattern '$MACHINE_NAME/*'
                     echo 'Done! c3po plugin installed and enrolled.'
+                    python3 -c \"
+import json, pathlib
+p = pathlib.Path.home() / '.claude' / 'c3po-credentials.json'
+d = json.loads(p.read_text())
+d['machine_name'] = '$MACHINE_NAME'
+p.write_text(json.dumps(d, indent=2) + '\\\n')
+\"
                 "
             exit 0
             ;;

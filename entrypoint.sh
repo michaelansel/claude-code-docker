@@ -37,17 +37,18 @@ if [[ "${CLAUDE_AGENT_MODE:-}" == "1" ]]; then
     if [[ -f "$CREDS_FILE" ]]; then
         coordinator_url=$(jq -r '.coordinator_url' "$CREDS_FILE")
         api_token=$(jq -r '.api_token' "$CREDS_FILE")
+        machine_name=$(jq -r '.machine_name // "docker"' "$CREDS_FILE")
         if [[ -n "$coordinator_url" && "$coordinator_url" != "null" &&
               -n "$api_token" && "$api_token" != "null" ]]; then
             echo "Checking c3po credentials..." >&2
             status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
                 -H "Authorization: Bearer $api_token" \
-                "$coordinator_url/agent/api/validate?machine_name=docker" 2>/dev/null) || true
+                "$coordinator_url/agent/api/validate?machine_name=$machine_name" 2>/dev/null) || true
             if [[ "$status" == "000" ]]; then
                 echo "ERROR: could not reach c3po coordinator at $coordinator_url" >&2
                 exit 1
             elif [[ "$status" == "403" ]]; then
-                echo "ERROR: c3po token does not authorize docker agents. Re-run setup-c3po with a docker/* scoped key." >&2
+                echo "ERROR: c3po token does not authorize $machine_name agents. Re-run setup-c3po with a $machine_name/* scoped key." >&2
                 exit 1
             elif [[ ! "$status" =~ ^2 ]]; then
                 echo "ERROR: c3po coordinator returned HTTP $status. Re-run setup-c3po or check coordinator health." >&2
