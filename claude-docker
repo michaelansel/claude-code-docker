@@ -55,21 +55,59 @@ usage() {
     echo "  claude-docker -b agent notes"
 }
 
-# Look up an agent directory from agents.yaml
-# Uses grep/sed — no yq dependency needed
-agent_lookup() {
+# Look up agent config from agents.yaml — sets AGENT_DIR and AGENT_MODEL globals.
+# Supports simple format (name: dir) and block format (name:\n  workspace: dir\n  model: opus).
+agent_config() {
     local name="$1"
     if [[ ! -f "$AGENTS_FILE" ]]; then
         echo "Error: agents.yaml not found at $AGENTS_FILE" >&2
         return 1
     fi
-    local dir
-    dir=$(sed -n "s/^${name}:[[:space:]]*//p" "$AGENTS_FILE" | head -1)
-    if [[ -z "$dir" ]]; then
+    AGENT_DIR=""
+    AGENT_MODEL=""
+    local found=false
+    local in_block=false
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip blank lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # Check for top-level key (no leading whitespace, has colon)
+        if [[ "$line" =~ ^[^[:space:]] && "$line" == *:* ]]; then
+            # If we were in our block, stop
+            if $in_block; then break; fi
+            local key="${line%%:*}"
+            local val="${line#*:}"
+            val="${val#"${val%%[![:space:]]*}"}"  # trim leading whitespace
+            if [[ "$key" == "$name" ]]; then
+                found=true
+                if [[ -n "$val" ]]; then
+                    # Simple format: name: dir
+                    AGENT_DIR="${val/#\~/$HOME}"
+                    return 0
+                else
+                    # Block format — read indented keys
+                    in_block=true
+                fi
+            fi
+        elif $in_block; then
+            # Indented line within our block
+            local trimmed="${line#"${line%%[![:space:]]*}"}"
+            local bkey="${trimmed%%:*}"
+            local bval="${trimmed#*:}"
+            bval="${bval#"${bval%%[![:space:]]*}"}"  # trim leading whitespace
+            case "$bkey" in
+                workspace) AGENT_DIR="${bval/#\~/$HOME}" ;;
+                model) AGENT_MODEL="$bval" ;;
+            esac
+        fi
+    done < "$AGENTS_FILE"
+    if ! $found; then
         return 1
     fi
-    # Expand ~ to $HOME
-    echo "${dir/#\~/$HOME}"
+    if [[ -z "$AGENT_DIR" ]]; then
+        echo "Error: agent '$name' has no workspace configured" >&2
+        return 1
+    fi
+    return 0
 }
 
 agent_list() {
@@ -78,13 +116,41 @@ agent_list() {
         exit 1
     fi
     echo "Available agents:"
-    while IFS=: read -r name dir; do
+    local cur_name="" cur_dir="" cur_model=""
+    _flush_agent() {
+        if [[ -n "$cur_name" && -n "$cur_dir" ]]; then
+            if [[ -n "$cur_model" ]]; then
+                printf "  %-15s %s  (model: %s)\n" "$cur_name" "$cur_dir" "$cur_model"
+            else
+                printf "  %-15s %s\n" "$cur_name" "$cur_dir"
+            fi
+        fi
+    }
+    while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip blank lines and comments
-        [[ -z "$name" || "$name" =~ ^[[:space:]]*# ]] && continue
-        # Trim whitespace
-        dir="${dir#"${dir%%[![:space:]]*}"}"
-        printf "  %-15s %s\n" "$name" "$dir"
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ "$line" =~ ^[^[:space:]] && "$line" == *:* ]]; then
+            # Top-level key — flush previous agent
+            _flush_agent
+            cur_name="${line%%:*}"
+            local val="${line#*:}"
+            val="${val#"${val%%[![:space:]]*}"}"
+            cur_dir="$val"
+            cur_model=""
+        elif [[ -n "$cur_name" ]]; then
+            # Indented line within a block
+            local trimmed="${line#"${line%%[![:space:]]*}"}"
+            local bkey="${trimmed%%:*}"
+            local bval="${trimmed#*:}"
+            bval="${bval#"${bval%%[![:space:]]*}"}"
+            case "$bkey" in
+                workspace) cur_dir="$bval" ;;
+                model) cur_model="$bval" ;;
+            esac
+        fi
     done < "$AGENTS_FILE"
+    _flush_agent
+    unset -f _flush_agent
 }
 
 WORK_DIR="$(pwd)"
@@ -94,6 +160,8 @@ STREAM_RAW=false
 NO_STREAM=false
 AGENT_MODE=false
 AGENT_NAME=""
+AGENT_DIR=""
+AGENT_MODEL=""
 PROJECT_NAME=""
 
 while [[ $# -gt 0 ]]; do
@@ -285,7 +353,7 @@ done
 
 # Agent mode: resolve directory and set defaults
 if $AGENT_MODE; then
-    AGENT_DIR=$(agent_lookup "$AGENT_NAME") || {
+    agent_config "$AGENT_NAME" || {
         echo "Error: unknown agent '$AGENT_NAME'" >&2
         echo "" >&2
         agent_list >&2
@@ -352,6 +420,9 @@ fi
 CLAUDE_ARGS=(-p "$PROMPT")
 if $STREAM || $STREAM_RAW; then
     CLAUDE_ARGS=(--output-format stream-json --verbose -p "$PROMPT")
+fi
+if [[ -n "$AGENT_MODEL" ]]; then
+    CLAUDE_ARGS+=(--model "$AGENT_MODEL")
 fi
 
 ENV_ARGS=(-e "CLAUDE_PROJECT_NAME=$PROJECT_NAME")

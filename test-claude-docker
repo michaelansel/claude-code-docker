@@ -647,6 +647,95 @@ assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p h
 assert_not_contains "no creds check" "Checking c3po credentials" "$out"
 teardown
 
+echo "=== block format agent with model ==="
+setup
+# Write a mixed agents.yaml with block format
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+notes: ~/Documents/Notes
+coder:
+  workspace: ~/Code/project
+  model: opus
+YAML
+mkdir -p "$TEST_DIR/Code/project"
+out=$(bash "$UNDER_TEST" --no-stream agent coder 2>&1)
+assert_contains "workspace resolves" "/Code/project" "$out"
+assert_contains "model flag passed" "--model opus" "$out"
+assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
+teardown
+
+echo "=== block format agent without model ==="
+setup
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+builder:
+  workspace: ~/Build
+YAML
+mkdir -p "$TEST_DIR/Build"
+out=$(bash "$UNDER_TEST" --no-stream agent builder 2>&1)
+assert_contains "workspace resolves" "/Build" "$out"
+assert_not_contains "no model flag" "--model" "$out"
+teardown
+
+echo "=== block format missing workspace exits non-zero ==="
+setup
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+broken:
+  model: opus
+YAML
+rc=0
+out=$(bash "$UNDER_TEST" agent broken 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+assert_contains "error about workspace" "no workspace" "$out"
+teardown
+
+echo "=== agent list with mixed formats ==="
+setup
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+notes: ~/Documents/Notes
+coder:
+  workspace: ~/Code/project
+  model: opus
+builder:
+  workspace: ~/Build
+YAML
+out=$(bash "$UNDER_TEST" agent list 2>&1)
+assert_contains "shows notes" "notes" "$out"
+assert_contains "shows notes dir" "~/Documents/Notes" "$out"
+assert_contains "shows coder" "coder" "$out"
+assert_contains "shows coder dir" "~/Code/project" "$out"
+assert_contains "shows coder model" "(model: opus)" "$out"
+assert_contains "shows builder" "builder" "$out"
+assert_contains "shows builder dir" "~/Build" "$out"
+assert_not_contains "builder has no model annotation" "builder.*model" "$out"
+teardown
+
+echo "=== simple format has no --model flag ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+assert_not_contains "no model flag for simple agent" "--model" "$out"
+teardown
+
+echo "=== mixed format ordering — block between simple entries ==="
+setup
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+first: ~/First
+middle:
+  workspace: ~/Middle
+  model: sonnet
+last: ~/Last
+YAML
+mkdir -p "$TEST_DIR/First" "$TEST_DIR/Middle" "$TEST_DIR/Last"
+out_first=$(bash "$UNDER_TEST" --no-stream agent first 2>&1)
+assert_contains "first agent resolves" "/First" "$out_first"
+assert_not_contains "first has no model" "--model" "$out_first"
+out_middle=$(bash "$UNDER_TEST" --no-stream agent middle 2>&1)
+assert_contains "middle agent resolves" "/Middle" "$out_middle"
+assert_contains "middle has model" "--model sonnet" "$out_middle"
+out_last=$(bash "$UNDER_TEST" --no-stream agent last 2>&1)
+assert_contains "last agent resolves" "/Last" "$out_last"
+assert_not_contains "last has no model" "--model" "$out_last"
+teardown
+
 echo "=== agent mode passes CLAUDE_AGENT_MODE=1 ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"

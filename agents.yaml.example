@@ -5,4 +5,10 @@
 #   claude-docker agent <name>    Run agent attached to its directory
 #   claude-docker agent list      List available agents
 #
+# Simple format — just a name and directory:
 notes: ~/Documents/Notes
+#
+# Extended format — per-agent config (workspace is required, model is optional):
+# coder:
+#   workspace: ~/Code/project
+#   model: opus
