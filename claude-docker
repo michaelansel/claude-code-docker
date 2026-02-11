@@ -133,6 +133,12 @@ agent_config() {
                         local cmd="${init_trimmed#"- "}"
                         cmd="${cmd#"-"}"  # Remove leading dash and space
                         cmd="${cmd#"${cmd%%[![:space:]]*}"}"  # trim leading whitespace
+                        # Strip leading/trailing quotes if present (YAML quoted strings)
+                        if [[ "$cmd" =~ ^\"(.*)\"$ ]]; then
+                            cmd="${BASH_REMATCH[1]}"
+                        elif [[ "$cmd" =~ ^\'(.*)\'$ ]]; then
+                            cmd="${BASH_REMATCH[1]}"
+                        fi
                         [[ -n "$cmd" ]] && AGENT_INIT+=("$cmd")
                     done
                     ;;
@@ -517,16 +523,15 @@ if [[ ${#AGENT_ENV[@]} -gt 0 ]]; then
     done
 fi
 
-# Run agent-specific init commands before launching Claude
+# Add agent-specific init commands
 if [[ ${#AGENT_INIT[@]} -gt 0 ]]; then
-    echo "Running init commands for agent '$AGENT_NAME'..." >&2
-    for cmd in "${AGENT_INIT[@]}"; do
-        echo "  $cmd" >&2
-        eval "$cmd" || {
-            echo "Error: Init command failed: $cmd" >&2
-            exit 1
-        }
-    done
+    # Convert array to ||| delimited string for environment variable
+    INIT_STR=$(printf '%s|||' "${AGENT_INIT[@]}")
+    # Strip trailing |||
+    INIT_STR="${INIT_STR%|||}"
+    # Base64 encode to safely pass through environment
+    INIT_B64=$(printf '%s' "$INIT_STR" | base64)
+    ENV_ARGS+=(-e "AGENT_INIT=$INIT_B64")
 fi
 
 # Give the container a name so we can stop it on interrupt.

@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Init commands (if any) ---
+if [[ -n "${AGENT_INIT:-}" ]]; then
+    echo "Running init commands..." >&2
+    # AGENT_INIT is base64-encoded, with ||| delimiter between commands
+    DECODED=$(printf '%s' "$AGENT_INIT" | base64 -d)
+    # Replace ||| with newlines and process line by line
+    while IFS= read -r cmd || [[ -n "$cmd" ]]; do
+        [[ -z "$cmd" ]] && continue
+        echo "  $cmd" >&2
+        eval "$cmd" || {
+            echo "Error: Init command failed: $cmd" >&2
+            exit 1
+        }
+    done <<< "$(printf '%s' "$DECODED" | sed 's/|||/\n/g')"
+    echo "Init commands completed." >&2
+fi
+
 # --- Plugin updates (all modes) ---
 PLUGIN_DIR="$HOME/.claude/plugins"
 
