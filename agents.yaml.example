@@ -12,3 +12,11 @@ notes: ~/Documents/Notes
 # coder:
 #   workspace: ~/Code/project
 #   model: opus
+#
+# Environment variables — pass custom env vars to the container:
+# myagent:
+#   workspace: ~/Code/myproject
+#   model: opus
+#   env:
+#     ANTHROPIC_BASE_URL: https://api.anthropic.com
+#     MY_CUSTOM_VAR: value

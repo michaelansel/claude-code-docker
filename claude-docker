@@ -55,8 +55,8 @@ usage() {
     echo "  claude-docker -b agent notes"
 }
 
-# Look up agent config from agents.yaml — sets AGENT_DIR and AGENT_MODEL globals.
-# Supports simple format (name: dir) and block format (name:\n  workspace: dir\n  model: opus).
+# Look up agent config from agents.yaml — sets AGENT_DIR, AGENT_MODEL, and AGENT_ENV globals.
+# Supports simple format (name: dir) and block format (name:\n  workspace: dir\n  model: opus\n  env: {...}).
 agent_config() {
     local name="$1"
     if [[ ! -f "$AGENTS_FILE" ]]; then
@@ -65,8 +65,10 @@ agent_config() {
     fi
     AGENT_DIR=""
     AGENT_MODEL=""
+    AGENT_ENV=()
     local found=false
     local in_block=false
+    local in_env_block=false
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip blank lines and comments
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
@@ -97,6 +99,21 @@ agent_config() {
             case "$bkey" in
                 workspace) AGENT_DIR="${bval/#\~/$HOME}" ;;
                 model) AGENT_MODEL="$bval" ;;
+                env)
+                    # Parse env block - read indented lines until dedent
+                    while IFS= read -r envline || [[ -n "$envline" ]]; do
+                        [[ -z "$envline" || "$envline" =~ ^[[:space:]]*# ]] && continue
+                        local env_trimmed="${envline#"${envline%%[![:space:]]*}"}"
+                        if [[ "$envline" != [[:space:]]* && "$envline" == *:* ]]; then
+                            # New top-level key, exit env block
+                            break
+                        fi
+                        local env_key="${env_trimmed%%:*}"
+                        local env_val="${env_trimmed#*:}"
+                        env_val="${env_val#"${env_val%%[![:space:]]*}"}"
+                        AGENT_ENV+=("$env_key=$env_val")
+                    done
+                    ;;
             esac
         fi
     done < "$AGENTS_FILE"
@@ -117,15 +134,22 @@ agent_list() {
     fi
     echo "Available agents:"
     local cur_name="" cur_dir="" cur_model=""
+    local cur_env_count=0
     _flush_agent() {
         if [[ -n "$cur_name" && -n "$cur_dir" ]]; then
+            local output="  %-15s %s"
+            local args=("$cur_name" "$cur_dir")
             if [[ -n "$cur_model" ]]; then
-                printf "  %-15s %s  (model: %s)\n" "$cur_name" "$cur_dir" "$cur_model"
-            else
-                printf "  %-15s %s\n" "$cur_name" "$cur_dir"
+                output+="  (model: %s)"
+                args+=("$cur_model")
             fi
+            if [[ $cur_env_count -gt 0 ]]; then
+                output+="  [env: $cur_env_count]"
+            fi
+            printf "$output\n" "${args[@]}"
         fi
     }
+    local in_env_block=false
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip blank lines and comments
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
@@ -137,6 +161,8 @@ agent_list() {
             val="${val#"${val%%[![:space:]]*}"}"
             cur_dir="$val"
             cur_model=""
+            cur_env_count=0
+            in_env_block=false
         elif [[ -n "$cur_name" ]]; then
             # Indented line within a block
             local trimmed="${line#"${line%%[![:space:]]*}"}"
@@ -146,6 +172,15 @@ agent_list() {
             case "$bkey" in
                 workspace) cur_dir="$bval" ;;
                 model) cur_model="$bval" ;;
+                env) in_env_block=true ;;
+                *)
+                    # If we're in an env block and line is indented, count env vars
+                    if $in_env_block && [[ "$line" == [[:space:]]* && "$line" == *:* ]]; then
+                        ((cur_env_count++)) || true
+                    else
+                        in_env_block=false
+                    fi
+                    ;;
             esac
         fi
     done < "$AGENTS_FILE"
@@ -162,6 +197,7 @@ AGENT_MODE=false
 AGENT_NAME=""
 AGENT_DIR=""
 AGENT_MODEL=""
+AGENT_ENV=()
 PROJECT_NAME=""
 
 while [[ $# -gt 0 ]]; do
@@ -434,6 +470,12 @@ if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
 fi
 if [[ -n "${C3PO_DEBUG:-}" ]]; then
     ENV_ARGS+=(-e "C3PO_DEBUG=$C3PO_DEBUG")
+fi
+# Add agent-specific env vars
+if [[ ${#AGENT_ENV[@]} -gt 0 ]]; then
+    for e in "${AGENT_ENV[@]}"; do
+        ENV_ARGS+=(-e "$e")
+    done
 fi
 
 # Give the container a name so we can stop it on interrupt.
