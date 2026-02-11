@@ -55,8 +55,8 @@ usage() {
     echo "  claude-docker -b agent notes"
 }
 
-# Look up agent config from agents.yaml — sets AGENT_DIR, AGENT_MODEL, and AGENT_ENV globals.
-# Supports simple format (name: dir) and block format (name:\n  workspace: dir\n  model: opus\n  env: {...}).
+# Look up agent config from agents.yaml — sets AGENT_DIR, AGENT_MODEL, AGENT_ENV, and AGENT_INIT globals.
+# Supports simple format (name: dir) and block format (name:\n  workspace: dir\n  model: opus\n  env: {...}\n  init: [...]).
 agent_config() {
     local name="$1"
     if [[ ! -f "$AGENTS_FILE" ]]; then
@@ -66,8 +66,11 @@ agent_config() {
     AGENT_DIR=""
     AGENT_MODEL=""
     AGENT_ENV=()
+    AGENT_INIT=()
     local found=false
     local in_block=false
+    local in_env_block=false
+    local in_init_block=false
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip blank lines and comments
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
@@ -99,6 +102,8 @@ agent_config() {
                 workspace) AGENT_DIR="${bval/#\~/$HOME}" ;;
                 model) AGENT_MODEL="$bval" ;;
                 env)
+                    in_env_block=true
+                    in_init_block=false
                     # Parse env block - read indented lines until dedent
                     while IFS= read -r envline || [[ -n "$envline" ]]; do
                         [[ -z "$envline" || "$envline" =~ ^[[:space:]]*# ]] && continue
@@ -111,6 +116,24 @@ agent_config() {
                         local env_val="${env_trimmed#*:}"
                         env_val="${env_val#"${env_val%%[![:space:]]*}"}"
                         AGENT_ENV+=("$env_key=$env_val")
+                    done
+                    ;;
+                init)
+                    in_init_block=true
+                    in_env_block=false
+                    # Parse init block - read indented lines (YAML list items) until dedent
+                    while IFS= read -r initline || [[ -n "$initline" ]]; do
+                        [[ -z "$initline" || "$initline" =~ ^[[:space:]]*# ]] && continue
+                        local init_trimmed="${initline#"${initline%%[![:space:]]*}"}"
+                        if [[ "$initline" != [[:space:]]* && "$initline" == *:* ]]; then
+                            # New top-level key, exit init block
+                            break
+                        fi
+                        # Handle YAML list format: "- command" or "  - command"
+                        local cmd="${init_trimmed#"- "}"
+                        cmd="${cmd#"-"}"  # Remove leading dash and space
+                        cmd="${cmd#"${cmd%%[![:space:]]*}"}"  # trim leading whitespace
+                        [[ -n "$cmd" ]] && AGENT_INIT+=("$cmd")
                     done
                     ;;
             esac
@@ -134,6 +157,7 @@ agent_list() {
     echo "Available agents:"
     local cur_name="" cur_dir="" cur_model=""
     local cur_env_count=0
+    local cur_init_count=0
     _flush_agent() {
         if [[ -n "$cur_name" && -n "$cur_dir" ]]; then
             local output="  %-15s %s"
@@ -142,8 +166,15 @@ agent_list() {
                 output+="  (model: %s)"
                 args+=("$cur_model")
             fi
+            local extras=()
             if [[ $cur_env_count -gt 0 ]]; then
-                output+="  [env: $cur_env_count]"
+                extras+=("env: $cur_env_count")
+            fi
+            if [[ $cur_init_count -gt 0 ]]; then
+                extras+=("init: $cur_init_count")
+            fi
+            if [[ ${#extras[@]} -gt 0 ]]; then
+                output+="  [${extras[*]}]"
             fi
             printf "$output\n" "${args[@]}"
         fi
@@ -160,6 +191,7 @@ agent_list() {
             cur_dir="$val"
             cur_model=""
             cur_env_count=0
+            cur_init_count=0
         elif [[ -n "$cur_name" ]]; then
             # Indented line within a block
             local trimmed="${line#"${line%%[![:space:]]*}"}"
@@ -169,10 +201,22 @@ agent_list() {
             case "$bkey" in
                 workspace) cur_dir="$bval" ;;
                 model) cur_model="$bval" ;;
-                env) ;;
+                env)
+                    # env block doesn't affect init count
+                    ;;
+                init)
+                    # Switch to init block, count will increment below
+                    cur_env_count=0
+                    ;;
                 *)
-                    # Count lines that look like env vars (indented with key:value)
-                    if [[ "$line" == [[:space:]]* && "$line" == *:* && "$trimmed" != workspace:* && "$trimmed" != model:* ]]; then
+                    # Check if this is an indented list item (init command) or env var
+                    # Trim leading whitespace for dash check
+                    local dash_check="${trimmed#"${trimmed%%[![:space:]]*}"}"
+                    if [[ "$trimmed" == "-"* ]]; then
+                        # This is an init command list item (starts with dash)
+                        ((cur_init_count++)) || true
+                    elif [[ "$line" == [[:space:]]* && "$line" == *:* && "$trimmed" != workspace:* && "$trimmed" != model:* ]]; then
+                        # This is an env var (indented with key:value)
                         ((cur_env_count++)) || true
                     fi
                     ;;
@@ -470,6 +514,18 @@ fi
 if [[ ${#AGENT_ENV[@]} -gt 0 ]]; then
     for e in "${AGENT_ENV[@]}"; do
         ENV_ARGS+=(-e "$e")
+    done
+fi
+
+# Run agent-specific init commands before launching Claude
+if [[ ${#AGENT_INIT[@]} -gt 0 ]]; then
+    echo "Running init commands for agent '$AGENT_NAME'..." >&2
+    for cmd in "${AGENT_INIT[@]}"; do
+        echo "  $cmd" >&2
+        eval "$cmd" || {
+            echo "Error: Init command failed: $cmd" >&2
+            exit 1
+        }
     done
 fi
 

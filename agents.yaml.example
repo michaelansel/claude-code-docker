@@ -20,3 +20,10 @@ notes: ~/Documents/Notes
 #   env:
 #     ANTHROPIC_BASE_URL: https://api.anthropic.com
 #     MY_CUSTOM_VAR: value
+#
+# Init commands — run before launching Claude (useful for setup tasks):
+# myagent:
+#   workspace: ~/Code/myproject
+#   init:
+#     - "source ~/venv/bin/activate"
+#     - "git pull origin main"
