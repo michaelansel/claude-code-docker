@@ -2,11 +2,57 @@
 
 ## Files
 
-- **`claude-docker`** (bash) — Main CLI entry point. Parses args, resolves agents, builds/runs containers (Docker or Finch) with proper mounts for credentials and config.
+- **`claude-docker`** (bash wrapper) — Shell wrapper that sets up Python venv and invokes `claude-docker.py`
+- **`claude-docker.py`** (Python) — Main CLI implementation. Parses args, resolves agents, builds/runs containers (Docker or Finch) with proper mounts for credentials and config
+- **`requirements.txt`** — Python dependencies (PyYAML for YAML parsing)
 - **`format-stream`** (Python) — Reads Claude's `stream-json` output from stdin and formats it with ANSI colors for terminal display. Handles system, assistant, user (tool results), and result message types.
 - **`test-claude-docker`** (bash) — Self-contained test suite with no external framework. Mocks the container runtime and `format-stream` as stub scripts in `$PATH`, validates argument parsing and command construction.
 - **`entrypoint.sh`** (bash) — Container entrypoint. Updates plugins and validates c3po credentials (agent mode) before launching claude.
-- **`Dockerfile`** — Node 20-slim base, installs claude-code globally. Version configurable via `CLAUDE_CODE_VERSION` build arg.
+- **`Dockerfile`** — Node 20-slim base, installs claude-code globally and PyYAML. Version configurable via `CLAUDE_CODE_VERSION` build arg.
+
+## Python Implementation
+
+The Python implementation (`claude-docker.py`) provides:
+
+- **PyYAML for robust YAML parsing** - Uses `yaml.safe_load()` instead of hand-rolled sed/grep parsing
+- **JSON for init command transfer** - Base64-encoded JSON arrays instead of `|||` delimited strings
+- **Dataclasses for agent config** - Clean structure for agent configuration
+- **Same CLI interface** - All flags and subcommands work identically to the bash version
+
+### Agent Config Parsing
+
+The Python implementation uses PyYAML to parse `agents.yaml`:
+
+**Simple format:**
+```yaml
+notes: ~/Documents/Notes
+```
+→ `AgentConfig(name="notes", workspace="/Users/.../Documents/Notes")`
+
+**Block format:**
+```yaml
+coder:
+  workspace: ~/Code/project
+  model: opus
+  env:
+    ANTHROPIC_BASE_URL: https://api.anthropic.com
+  init:
+    - "source ~/venv/bin/activate"
+```
+→ Full `AgentConfig` with all fields populated
+
+### Init Commands Transfer
+
+Init commands are encoded as:
+1. JSON array: `["cmd1", "cmd2"]`
+2. Base64 encoded: `WyJjbWQxIiwgImNtZDIiXQ==`
+3. Passed via `AGENT_INIT` environment variable
+
+The `entrypoint.sh` decodes using:
+```bash
+DECODED=$(printf '%s' "$AGENT_INIT" | base64 -d)
+jq -r '.[]' <<< "$DECODED"
+```
 
 ## Subcommands
 
@@ -80,7 +126,7 @@ This avoids unnecessary rebuilds when only non-image files change (tests, docs, 
 | `~/.claude-docker/` | All persistent container state |
 | `~/.claude-docker/.claude.json` | MCP server configuration |
 | `~/.claude-docker/.oauth-token` | Stored OAuth token |
-| `~/.claude-docker/agents.yaml` | Agent registry (`name: directory` YAML) |
+| `~/.claude-docker/agents.yaml` | Agent registry (YAML) |
 | `~/.claude-docker/plugins/` | Installed Claude Code plugins |
 
 ## setup-c3po Flow

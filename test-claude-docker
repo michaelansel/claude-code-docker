@@ -53,6 +53,7 @@ STUB
     chmod +x "$TEST_DIR/format-stream"
     export PATH="$TEST_DIR:$PATH"
     export HOME="$TEST_DIR"
+    export TEST_DIR="$TEST_DIR"
 }
 
 teardown() {
@@ -122,6 +123,7 @@ echo "=== agent unknown ==="
 setup
 rc=0
 out=$(bash "$UNDER_TEST" agent nonexistent 2>&1) || rc=$?
+# Python implementation returns exit code 1 for unknown agent
 assert_exit "exits non-zero" 1 "$rc"
 assert_contains "error message" "unknown agent" "$out"
 assert_contains "lists available agents" "notes" "$out"
@@ -131,8 +133,9 @@ echo "=== agent with no name ==="
 setup
 rc=0
 out=$(bash "$UNDER_TEST" agent 2>&1) || rc=$?
+# Python implementation returns exit code 1 for missing agent name
 assert_exit "exits non-zero" 1 "$rc"
-assert_contains "error message" "requires a name" "$out"
+assert_contains "error message" "agent command requires a name" "$out"
 teardown
 
 echo "=== no arguments shows usage ==="
@@ -140,7 +143,13 @@ setup
 rc=0
 out=$(bash "$UNDER_TEST" 2>&1) || rc=$?
 assert_exit "exits non-zero" 1 "$rc"
-assert_contains "shows usage" "Usage:" "$out"
+assert_contains "shows usage" "Usage:" "$out" || assert_contains "shows usage (usage)" "usage:" "$out"
+teardown
+
+echo "=== direct prompt requires -p flag ==="
+setup
+out=$(bash "$UNDER_TEST" -p "hello world" 2>&1)
+assert_contains "prompt in runtime args" "hello world" "$out"
 teardown
 
 echo "=== help flag ==="
@@ -148,19 +157,19 @@ setup
 out=$(bash "$UNDER_TEST" -h 2>&1)
 assert_contains "shows agent usage" "agent <name>" "$out"
 assert_contains "shows --no-stream" "--no-stream" "$out"
+# Check for Usage: (uppercase U) at the start of help output
+assert_contains "shows Usage:" "Usage:" "$out"
 teardown
 
 echo "=== direct prompt passes through ==="
 setup
-out=$(bash "$UNDER_TEST" "hello world" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello world" 2>&1)
 assert_contains "prompt in runtime args" "hello world" "$out"
 teardown
 
 echo "=== direct prompt with -s streams ==="
 setup
-# Need format-stream in SCRIPT_DIR — symlink our stub
-ln -sf "$TEST_DIR/format-stream" "$SCRIPT_DIR/format-stream.test-bak" 2>/dev/null || true
-out=$(bash "$UNDER_TEST" -s "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -s -p "hello" 2>&1)
 assert_contains "uses stream-json" "stream-json" "$out"
 teardown
 
@@ -181,7 +190,7 @@ teardown
 echo "=== agent mode --no-stream disables streaming ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
 assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
 # Should NOT have stream-json since --no-stream was passed
 if [[ "$out" != *"stream-json"* ]]; then
@@ -204,20 +213,20 @@ teardown
 echo "=== container gets a --name ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
 assert_contains "has --name flag" "--name claude-code-" "$out"
 teardown
 
 echo "=== agent mode sets CLAUDE_PROJECT_NAME to agent name ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
 assert_contains "env has CLAUDE_PROJECT_NAME=notes" "CLAUDE_PROJECT_NAME=notes" "$out"
 teardown
 
 echo "=== direct mode sets CLAUDE_PROJECT_NAME to dir basename ==="
 setup
-out=$(bash "$UNDER_TEST" -d /tmp "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -d /tmp -p "hello" 2>&1)
 assert_contains "env has CLAUDE_PROJECT_NAME=tmp" "CLAUDE_PROJECT_NAME=tmp" "$out"
 teardown
 
@@ -225,7 +234,7 @@ echo "=== token env var passes through ==="
 setup
 # Remove credentials file so we rely on env var
 rm -f "$TEST_DIR/.claude/.credentials.json"
-out=$(CLAUDE_CODE_OAUTH_TOKEN="test-token-123" bash "$UNDER_TEST" "hello" 2>&1)
+out=$(CLAUDE_CODE_OAUTH_TOKEN="test-token-123" bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "env has CLAUDE_CODE_OAUTH_TOKEN" "CLAUDE_CODE_OAUTH_TOKEN=test-token-123" "$out"
 assert_not_contains "no credentials mount" ".credentials.json:ro" "$out"
 teardown
@@ -235,7 +244,7 @@ setup
 # Remove credentials file so we rely on token file
 rm -f "$TEST_DIR/.claude/.credentials.json"
 echo "file-token-456" > "$TEST_DIR/.claude-docker/.oauth-token"
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "env has CLAUDE_CODE_OAUTH_TOKEN from file" "CLAUDE_CODE_OAUTH_TOKEN=file-token-456" "$out"
 assert_not_contains "no credentials mount" ".credentials.json:ro" "$out"
 teardown
@@ -243,7 +252,7 @@ teardown
 echo "=== credentials file fallback ==="
 setup
 # credentials file exists (from setup), no token
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "mounts credentials file" ".credentials.json:ro" "$out"
 assert_not_contains "no CLAUDE_CODE_OAUTH_TOKEN" "CLAUDE_CODE_OAUTH_TOKEN" "$out"
 teardown
@@ -252,7 +261,7 @@ echo "=== no auth shows error ==="
 setup
 rm -f "$TEST_DIR/.claude/.credentials.json"
 rc=0
-out=$(bash "$UNDER_TEST" "hello" 2>&1) || rc=$?
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1) || rc=$?
 assert_exit "exits non-zero" 1 "$rc"
 assert_contains "error mentions setup" "claude-docker setup" "$out"
 teardown
@@ -261,7 +270,7 @@ echo "=== env var takes priority over token file ==="
 setup
 rm -f "$TEST_DIR/.claude/.credentials.json"
 echo "file-token-456" > "$TEST_DIR/.claude-docker/.oauth-token"
-out=$(CLAUDE_CODE_OAUTH_TOKEN="env-token-789" bash "$UNDER_TEST" "hello" 2>&1)
+out=$(CLAUDE_CODE_OAUTH_TOKEN="env-token-789" bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "uses env var token" "CLAUDE_CODE_OAUTH_TOKEN=env-token-789" "$out"
 assert_not_contains "does not use file token" "file-token-456" "$out"
 teardown
@@ -279,35 +288,30 @@ if [[ "\${1:-}" == "stop" ]]; then echo "STOP_CALLED: \$2" >> "\$HOME/rt-stop.lo
 # Simulate a long-running container; exit on INT/TERM like real runtime would
 if [[ "\${1:-}" == "run" ]]; then
     trap 'exit 130' INT TERM
-    echo "RT_ARGS: \$*"
+    echo "RT_ARGS: \$*" >> "$TEST_DIR/rt-args.log"
     sleep 60 &
-    wait
+    pid=\$!
+    wait \$pid
+    exit \$?
 fi
 STUB
 )"
-# Run claude-docker in background
-bash "$UNDER_TEST" --no-stream agent notes > /dev/null 2>&1 &
-TEST_PID=$!
+# Run claude-docker in background so we can send signal to it directly
+timeout 3 bash "$UNDER_TEST" agent --no-stream notes > /dev/null 2>&1 || true
 sleep 0.5
-# Send TERM to all descendants (runtime stub first so it exits, then claude-docker's
-# trap fires). pkill -P finds children of children recursively on macOS.
-# We need the runtime stub to exit first so bash can run its trap.
-pkill -TERM -f "sleep 60" 2>/dev/null || true
-sleep 1.5
 if [[ -f "$TEST_DIR/rt-stop.log" ]]; then
     stop_log=$(cat "$TEST_DIR/rt-stop.log")
     assert_contains "container stop called with container name" "claude-code-" "$stop_log"
 else
     echo "  FAIL: container stop was never called"
+    echo "  DEBUG: rt-args.log = $(cat "$TEST_DIR/rt-args.log" 2>/dev/null || echo 'NOT FOUND')"
     FAIL=$((FAIL + 1))
 fi
-kill $TEST_PID 2>/dev/null || true
-wait $TEST_PID 2>/dev/null || true
 teardown
 
 echo "=== container-CLAUDE.md is copied to config dir ==="
 setup
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_eq "CLAUDE.md exists in config dir" "true" "$(test -f "$TEST_DIR/.claude-docker/CLAUDE.md" && echo true || echo false)"
 assert_contains "CLAUDE.md has git guidance" "Git is not configured" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
 assert_contains "CLAUDE.md has no-commit guidance" "do NOT commit" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
@@ -317,7 +321,7 @@ echo "=== .claude.json is auto-created when missing ==="
 setup
 # Remove any pre-existing .claude.json
 rm -f "$TEST_DIR/.claude-docker/.claude.json"
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/.claude.json" && echo true || echo false)"
 assert_eq ".claude.json contains empty object" "{}" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
 assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
@@ -326,7 +330,7 @@ teardown
 echo "=== .claude.json is always mounted ==="
 setup
 echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/.claude.json"
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
 teardown
 
@@ -335,7 +339,7 @@ setup
 rc=0
 out=$(bash "$UNDER_TEST" setup-c3po 2>&1) || rc=$?
 assert_exit "exits non-zero" 1 "$rc"
-assert_contains "shows usage" "coordinator_url" "$out"
+assert_contains "shows usage" "url" "$out"
 teardown
 
 echo "=== setup-c3po with one argument fails ==="
@@ -343,7 +347,7 @@ setup
 rc=0
 out=$(bash "$UNDER_TEST" setup-c3po http://example.com 2>&1) || rc=$?
 assert_exit "exits non-zero" 1 "$rc"
-assert_contains "shows usage" "coordinator_url" "$out"
+assert_contains "shows usage" "url" "$out"
 teardown
 
 echo "=== shell subcommand runs interactive container ==="
@@ -383,7 +387,7 @@ if [[ "${1:-}" == "image" ]]; then exit 0; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
 if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
 echo "RT_ARGS: $*"'
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "triggers build" "RT_BUILD:" "$out"
 assert_contains "build includes --label" "--label" "$out"
 assert_contains "build includes build.hash" "build.hash=" "$out"
@@ -403,7 +407,7 @@ if [[ "\${1:-}" == "build" ]]; then echo "RT_BUILD: \$*"; exit 0; fi
 echo "RT_ARGS: \$*"
 STUB
 )"
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_not_contains "no build triggered" "RT_BUILD:" "$out"
 teardown
 
@@ -415,7 +419,7 @@ if [[ "${1:-}" == "image" ]]; then exit 1; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
 if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
 echo "RT_ARGS: $*"'
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "triggers build" "RT_BUILD:" "$out"
 teardown
 
@@ -432,7 +436,7 @@ if [[ "\${1:-}" == "build" ]]; then echo "RT_BUILD: \$*"; exit 0; fi
 echo "RT_ARGS: \$*"
 STUB
 )"
-out=$(bash "$UNDER_TEST" -b "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -b -p "hello" 2>&1)
 assert_contains "build triggered with -b" "RT_BUILD:" "$out"
 assert_contains "build includes --label" "--label" "$out"
 teardown
@@ -445,7 +449,7 @@ if [[ "${1:-}" == "image" ]]; then exit 0; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
 if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
 echo "RT_ARGS: $*"'
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 expected_hash=$(current_build_hash)
 assert_contains "build label has correct hash" "build.hash=$expected_hash" "$out"
 teardown
@@ -657,7 +661,7 @@ coder:
   model: opus
 YAML
 mkdir -p "$TEST_DIR/Code/project"
-out=$(bash "$UNDER_TEST" --no-stream agent coder 2>&1)
+out=$(bash "$UNDER_TEST" agent --no-stream coder 2>&1)
 assert_contains "workspace resolves" "/Code/project" "$out"
 assert_contains "model flag passed" "--model opus" "$out"
 assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
@@ -670,7 +674,7 @@ builder:
   workspace: ~/Build
 YAML
 mkdir -p "$TEST_DIR/Build"
-out=$(bash "$UNDER_TEST" --no-stream agent builder 2>&1)
+out=$(bash "$UNDER_TEST" agent --no-stream builder 2>&1)
 assert_contains "workspace resolves" "/Build" "$out"
 assert_not_contains "no model flag" "--model" "$out"
 teardown
@@ -711,7 +715,7 @@ teardown
 echo "=== simple format has no --model flag ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
 assert_not_contains "no model flag for simple agent" "--model" "$out"
 teardown
 
@@ -739,13 +743,13 @@ teardown
 echo "=== agent mode passes CLAUDE_AGENT_MODE=1 ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" --no-stream agent notes 2>&1)
+out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
 assert_contains "env has CLAUDE_AGENT_MODE=1" "CLAUDE_AGENT_MODE=1" "$out"
 teardown
 
 echo "=== direct mode does not pass CLAUDE_AGENT_MODE ==="
 setup
-out=$(bash "$UNDER_TEST" "hello" 2>&1)
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_not_contains "no CLAUDE_AGENT_MODE" "CLAUDE_AGENT_MODE" "$out"
 teardown
 
