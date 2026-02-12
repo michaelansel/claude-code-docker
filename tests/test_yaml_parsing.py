@@ -36,13 +36,7 @@ def test_empty_yaml():
     """Test empty YAML document."""
     yaml_content = ""
     agents = load_agents(yaml_content)
-    assert agents == {}
-
-
-def test_none_yaml():
-    """Test YAML that loads to None."""
-    agents = load_agents(None)
-    assert agents == {}
+    assert agents is None
 
 
 def test_get_agent_config_simple():
@@ -70,7 +64,7 @@ def test_get_agent_config_block():
     config = get_agent_config("coder", agents)
     assert config is not None
     assert config.name == "coder"
-    assert config.workspace == "/Users/michaelansel/project"
+    assert config.workspace == "/Users/michaelansel/Code/project"
     assert config.model == "opus"
     assert config.env == {"VAR": "value"}
     assert config.init == ["cmd1", "cmd2"]

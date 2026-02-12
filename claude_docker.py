@@ -24,21 +24,60 @@ TOKEN_FILE = CONFIG_DIR / ".oauth-token"
 USER_CONFIG = CONFIG_DIR / ".claude.json"
 AGENTS_FILE = CONFIG_DIR / "agents.yaml"
 
-# Track running container for cleanup
-_running_container: Optional[str] = None
+
+class ClaudeDocker:
+    """Main claude-docker class with encapsulated state."""
+
+    def __init__(self):
+        self._running_container: Optional[str] = None
+        self._runtime: Optional[str] = None
+
+    @property
+    def runtime(self) -> str:
+        """Get or detect container runtime."""
+        if self._runtime is None:
+            self._runtime = self._detect_runtime()
+        return self._runtime
+
+    def _detect_runtime(self) -> str:
+        """Auto-select docker or finch."""
+        if subprocess.run(["which", "docker"], capture_output=True).returncode == 0:
+            return "docker"
+        elif subprocess.run(["which", "finch"], capture_output=True).returncode == 0:
+            return "finch"
+        else:
+            print(f"Error: No container runtime found. Install docker or finch.", file=sys.stderr)
+            sys.exit(1)
+
+    def cleanup_container(self) -> None:
+        """Stop the running container if it exists."""
+        if self._running_container:
+            try:
+                subprocess.run([self.runtime, "stop", self._running_container],
+                             capture_output=True)
+            except Exception:
+                pass
+            self._running_container = None
+
+    def signal_handler(self, signum, frame):
+        """Handle SIGINT and SIGTERM to cleanup container."""
+        self.cleanup_container()
+        sys.exit(130)
+
+
+# Global instance (must be defined before functions that use it)
+claude_docker = ClaudeDocker()
+
+
+# Keep helper functions module-level for backward compatibility
+def detect_runtime() -> str:
+    """Auto-select docker or finch (module-level wrapper)."""
+    return claude_docker.runtime
 
 
 def cleanup_container(runtime: Optional[str] = None):
-    """Stop the running container if it exists."""
-    global _running_container
-    if _running_container:
-        if runtime is None:
-            runtime = detect_runtime()
-        try:
-            subprocess.run([runtime, "stop", _running_container], capture_output=True)
-        except Exception:
-            pass
-        _running_container = None
+    """Stop the running container if it exists (global wrapper)."""
+    claude_docker.cleanup_container()
 
 
 # Register cleanup on exit (including signal termination)
@@ -46,20 +85,8 @@ atexit.register(cleanup_container)
 
 
 def signal_handler(signum, frame):
-    """Handle SIGINT and SIGTERM to cleanup container."""
-    cleanup_container()
-    sys.exit(130)
-
-
-def detect_runtime() -> str:
-    """Auto-select docker or finch."""
-    if subprocess.run(["which", "docker"], capture_output=True).returncode == 0:
-        return "docker"
-    elif subprocess.run(["which", "finch"], capture_output=True).returncode == 0:
-        return "finch"
-    else:
-        print("Error: No container runtime found. Install docker or finch.", file=sys.stderr)
-        sys.exit(1)
+    """Handle SIGINT and SIGTERM to cleanup container (global wrapper)."""
+    claude_docker.signal_handler(signum, frame)
 
 
 def build_hash() -> str:
@@ -90,23 +117,29 @@ def needs_rebuild(runtime: str) -> bool:
     return image_hash != build_hash()
 
 
-def load_agents() -> Dict:
-    """Load and parse agents.yaml with PyYAML."""
+def load_agents(yaml_content: str = None) -> Optional[Dict]:
+    """Load and parse agents.yaml with PyYAML.
+
+    Args:
+        yaml_content: Optional YAML string to parse. If not provided, reads from AGENTS_FILE.
+    """
     try:
         import yaml
     except ImportError:
-        print("Error: PyYAML is required. Run: pip install pyyaml", file=sys.stderr)
+        print(f"Error: PyYAML is required. Run: pip install pyyaml", file=sys.stderr)
         sys.exit(1)
 
+    if yaml_content is not None:
+        return yaml.safe_load(yaml_content)
+
+    # No yaml_content provided - try to read from file
     if not AGENTS_FILE.exists():
-        print(f"Error: agents.yaml not found at {AGENTS_FILE}", file=sys.stderr)
-        sys.exit(1)
-
+        return None
     with open(AGENTS_FILE) as f:
-        return yaml.safe_load(f) or {}
+        return yaml.safe_load(f)
 
 
-@dataclass
+@dataclass(frozen=True)
 class AgentConfig:
     """Represents an agent's configuration."""
     name: str
@@ -117,20 +150,26 @@ class AgentConfig:
 
 
 def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
-    """Extract agent configuration from parsed YAML."""
+    """Extract agent configuration from parsed YAML.
+
+    Returns None if agent doesn't exist or workspace is missing.
+    """
     raw = agents.get(name)
     if raw is None:
         return None
 
     if isinstance(raw, str):
-        return AgentConfig(
-            name=name,
-            workspace=os.path.expanduser(raw)
-        )
+        workspace = os.path.expanduser(raw)
+        if not workspace:
+            return None
+        return AgentConfig(name=name, workspace=workspace)
     elif isinstance(raw, dict):
+        workspace = os.path.expanduser(raw.get("workspace", ""))
+        if not workspace:
+            return None
         return AgentConfig(
             name=name,
-            workspace=os.path.expanduser(raw.get("workspace", "")),
+            workspace=workspace,
             model=raw.get("model"),
             env=raw.get("env", {}) or {},
             init=raw.get("init", []) or []
@@ -179,14 +218,12 @@ def decode_init_commands(encoded: str) -> List[str]:
 
 def run_container(args: List[str], stream: bool = True, stream_raw: bool = False) -> int:
     """Run the container and return exit code."""
-    global _running_container
-
-    runtime = detect_runtime()
+    runtime = claude_docker.runtime
 
     # Extract container name for cleanup
     for i, arg in enumerate(args):
         if arg == "--name" and i + 1 < len(args):
-            _running_container = args[i + 1]
+            claude_docker._running_container = args[i + 1]
             break
 
     cmd = [runtime] + args
@@ -223,7 +260,7 @@ def build_docker_args(
     stream_raw: bool
 ) -> tuple:
     """Build the docker/finch run arguments."""
-    runtime = detect_runtime()
+    runtime = claude_docker.runtime
 
     mounts = [
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
@@ -321,7 +358,7 @@ def cmd_setup_c3po(args: argparse.Namespace) -> int:
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
-    runtime = detect_runtime()
+    runtime = claude_docker.runtime
 
     if needs_rebuild(runtime):
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
@@ -334,23 +371,27 @@ def cmd_setup_c3po(args: argparse.Namespace) -> int:
 
     machine_name = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
 
-    setup_cmd = f"""
-set -euo pipefail
-echo 'Adding/updating michaelansel marketplace...'
-claude plugin marketplace update michaelansel 2>/dev/null || claude plugin marketplace add michaelansel/claude-code-plugins
-echo 'Installing/updating c3po plugin...'
-claude plugin update c3po@michaelansel 2>/dev/null || claude plugin install c3po@michaelansel
-echo 'Enrolling with coordinator...'
-SETUP_PY=$(find ~/.claude/plugins -path '*/c3po*/setup.py' -print -quit)
-if [[ -z "$SETUP_PY" ]]; then
-    echo 'Error: Could not find c3po setup.py' >&2
-    exit 1
-fi
-python3 "$SETUP_PY" --enroll '{args.url}' '{args.token}' --machine '{machine_name}' --pattern '{machine_name}/*'
-echo 'Done! c3po plugin installed and enrolled.'
-"""
+    # Build setup script with proper escaping - use subprocess instead of f-strings for security
+    setup_commands = [
+        "set -euo pipefail",
+        "echo 'Adding/updating michaelansel marketplace...'",
+        "claude plugin marketplace update michaelansel 2>/dev/null || claude plugin marketplace add michaelansel/claude-code-plugins",
+        "echo 'Installing/updating c3po plugin...'",
+        "claude plugin update c3po@michaelansel 2>/dev/null || claude plugin install c3po@michaelansel",
+        "echo 'Enrolling with coordinator...'",
+        "SETUP_PY=$(find ~/.claude/plugins -path '*/c3po*/setup.py' -print -quit)",
+        "if [[ -z \"$SETUP_PY\" ]]; then",
+        "    echo 'Error: Could not find c3po setup.py' >&2",
+        "    exit 1",
+        "fi",
+        f"python3 \"$SETUP_PY\" --enroll {args.url} {args.token} --machine {machine_name} --pattern {machine_name}/*",
+        "echo 'Done! c3po plugin installed and enrolled.'"
+    ]
 
-    setup_cmd += f"""
+    setup_script = "\n".join(setup_commands)
+
+    # Update c3po credentials
+    cred_script = f"""
 python3 -c "
 import json, pathlib
 p = pathlib.Path.home() / '.claude' / 'c3po-credentials.json'
@@ -366,7 +407,7 @@ p.write_text(json.dumps(d, indent=2) + '\\n')
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
         "-v", f"{USER_CONFIG}:/home/node/.claude.json",
         IMAGE_NAME,
-        "-c", setup_cmd
+        "-c", setup_script + cred_script
     ], check=True)
 
     return 0
@@ -378,7 +419,7 @@ def cmd_shell(args: argparse.Namespace) -> int:
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
-    runtime = detect_runtime()
+    runtime = claude_docker.runtime
 
     if needs_rebuild(runtime):
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
@@ -416,12 +457,51 @@ def cmd_shell(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_agent(args_list: List[str], args: argparse.Namespace, global_flags: List[str] = None) -> int:
-    """Handle agent subcommand (list or run)."""
-    if global_flags is None:
-        global_flags = []
+def cmd_agent_list(args: argparse.Namespace) -> int:
+    """Handle agent list subcommand."""
+    agents = load_agents()
+    list_agents(agents)
+    return 0
 
-    # Parse global_flags for stream settings first
+
+def cmd_agent_run(args: argparse.Namespace) -> int:
+    """Handle agent run subcommand."""
+    agent_name = args.agent_name
+
+    agents = load_agents()
+    config = get_agent_config(agent_name, agents)
+    if config is None:
+        print(f"Error: unknown agent '{agent_name}'", file=sys.stderr)
+        print("", file=sys.stderr)
+        list_agents(agents, file=sys.stderr)
+        return 1
+
+    if not config.workspace:
+        print(f"Error: agent '{agent_name}' has no workspace configured", file=sys.stderr)
+        return 1
+
+    # Parse args for global flags (stream settings)
+    global_flags = []
+    for arg in sys.argv[1:]:
+        if arg in ("-s", "-sj", "--no-stream", "-b"):
+            global_flags.append(arg)
+
+    project_name = agent_name
+    runtime = claude_docker.runtime
+
+    # Check if -b flag forces a rebuild
+    force_rebuild = "-b" in global_flags
+
+    if force_rebuild or needs_rebuild(runtime):
+        print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
+        subprocess.run([
+            runtime, "build",
+            "--label", f"build.hash={build_hash()}",
+            "-t", IMAGE_NAME,
+            str(SCRIPT_DIR)
+        ], check=True)
+
+    # Parse global_flags for stream settings
     agent_stream = True  # Default for agent mode
     agent_stream_raw = False
     i = 0
@@ -440,75 +520,6 @@ def cmd_agent(args_list: List[str], args: argparse.Namespace, global_flags: List
             i += 1
         else:
             i += 1
-
-    if not args_list:
-        print("Error: agent command requires a name or 'list'", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Usage: claude-docker agent <name>", file=sys.stderr)
-        print("       claude-docker agent list", file=sys.stderr)
-        return 1
-
-    if args_list[0] == "list":
-        agents = load_agents()
-        list_agents(agents)
-        return 0
-
-    # Parse remaining flags from args_list to find the agent name
-    j = 0
-    while j < len(args_list):
-        arg = args_list[j]
-        if arg == "--no-stream":
-            agent_stream = False
-            agent_stream_raw = False
-            j += 1
-        elif arg == "-s":
-            agent_stream = True
-            j += 1
-        elif arg == "-sj":
-            agent_stream = True
-            agent_stream_raw = True
-            j += 1
-        elif arg.startswith("-"):
-            # Other flags - skip
-            j += 1
-        else:
-            # This is the agent name
-            agent_name = arg
-            break
-    else:
-        # No agent name found
-        print("Error: agent command requires a name", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Usage: claude-docker agent <name>", file=sys.stderr)
-        print("       claude-docker agent list", file=sys.stderr)
-        return 1
-
-    agents = load_agents()
-    config = get_agent_config(agent_name, agents)
-    if config is None:
-        print(f"Error: unknown agent '{agent_name}'", file=sys.stderr)
-        print("", file=sys.stderr)
-        list_agents(agents, file=sys.stderr)
-        return 1
-
-    if not config.workspace:
-        print(f"Error: agent '{agent_name}' has no workspace configured", file=sys.stderr)
-        return 1
-
-    project_name = agent_name
-    runtime = detect_runtime()
-
-    # Check if -b flag forces a rebuild
-    force_rebuild = "-b" in global_flags
-
-    if force_rebuild or needs_rebuild(runtime):
-        print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
-        subprocess.run([
-            runtime, "build",
-            "--label", f"build.hash={build_hash()}",
-            "-t", IMAGE_NAME,
-            str(SCRIPT_DIR)
-        ], check=True)
 
     docker_args, stream = build_docker_args(
         prompt="",
@@ -550,7 +561,7 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
     if container_claude_md.exists():
         (CONFIG_DIR / "CLAUDE.md").write_text(container_claude_md.read_text())
 
-    runtime = detect_runtime()
+    runtime = claude_docker.runtime
 
     # Check if -b flag forces a rebuild
     force_rebuild = "-b" in flags
@@ -649,123 +660,81 @@ Examples:
 
 
 def main():
-    """Main entry point with manual argument parsing."""
-    cmd_args = sys.argv[1:]
+    """Main entry point with argparse-based argument parsing."""
+    parser = argparse.ArgumentParser(
+        prog="claude-docker",
+        description="Run Claude Code inside Docker/Finch containers",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  claude-docker -p "hello world"   Run a prompt
+  claude-docker -d /path agent notes   Run agent with specific directory
+  claude-docker agent <name>       Run named agent
+  claude-docker agent list         List available agents
+  claude-docker setup              Set up authentication
+  claude-docker shell              Interactive shell
+        """
+    )
 
-    # Parse global flags and identify subcommand
-    global_flags = []
-    subcommand = None
-    subcommand_args = []
-    i = 0
-    while i < len(cmd_args):
-        arg = cmd_args[i]
+    # Global flags
+    parser.add_argument("-d", "--dir", help="Working directory to mount")
+    parser.add_argument("-s", "--stream", action="store_true",
+                        help="Stream formatted output")
+    parser.add_argument("-sj", "--stream-json", action="store_true",
+                        help="Stream raw JSON output")
+    parser.add_argument("--no-stream", action="store_true",
+                        help="Disable streaming")
+    parser.add_argument("-b", "--build", action="store_true",
+                        help="Rebuild image before running")
 
-        if arg in ("-h", "--help"):
-            print_help()
-            return 0
+    # Subcommands
+    subparsers = parser.add_subparsers(dest="command", help="Subcommands")
 
-        elif arg in ("-d", "--dir"):
-            if i + 1 < len(cmd_args):
-                global_flags.append(arg)
-                global_flags.append(cmd_args[i + 1])
-                i += 2
-                continue
-            else:
-                global_flags.append(arg)
-                i += 1
-                continue
+    # Direct prompt (positional)
+    parser.add_argument("prompt", nargs="*", help="Prompt to run (direct mode)")
 
-        elif arg.startswith("--dir=") or arg.startswith("-d="):
-            global_flags.append(arg)
-            i += 1
-            continue
+    # setup
+    setup_parser = subparsers.add_parser("setup", help="Set up authentication")
+    setup_parser.add_argument("token", nargs="?", help="OAuth token")
 
-        elif arg in ("-s", "-sj", "--no-stream", "-b"):
-            global_flags.append(arg)
-            i += 1
-            continue
+    # setup-c3po
+    setup_c3po_parser = subparsers.add_parser("setup-c3po",
+        help="Install and enroll c3po plugin")
+    setup_c3po_parser.add_argument("url", help="Coordinator URL")
+    setup_c3po_parser.add_argument("token", help="Admin token")
 
-        elif arg == "-p":
-            if i + 1 < len(cmd_args):
-                # Found -p with prompt value
-                prompt = cmd_args[i + 1]
-                global_flags.append(arg)
-                global_flags.append(cmd_args[i + 1])
-                # Skip the prompt value as it's been consumed
-                subcommand_args = cmd_args[i + 2:]
-                # No subcommand - direct prompt mode
-                return cmd_direct_prompt(prompt, argparse.Namespace(), global_flags)
-            else:
-                global_flags.append(arg)
-                i += 1
-                continue
-            break  # Stop parsing, prompt is the remaining content
+    # shell
+    subparsers.add_parser("shell", help="Interactive shell in container")
 
-        elif arg in ("setup", "shell"):
-            subcommand = arg
-            subcommand_args = cmd_args[i + 1:]
-            break
+    # agent
+    agent_parser = subparsers.add_parser("agent", help="Run named agent")
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_cmd")
+    agent_subparsers.add_parser("list", help="List available agents")
+    agent_run_parser = agent_subparsers.add_parser("run",
+        help="Run named agent")
+    agent_run_parser.add_argument("agent_name", help="Agent name")
 
-        elif arg == "setup-c3po":
-            subcommand = "setup-c3po"
-            subcommand_args = cmd_args[i + 1:]
-            break
+    args = parser.parse_args()
 
-        elif arg == "agent":
-            subcommand = "agent"
-            subcommand_args = cmd_args[i + 1:]
-            break
-
-        elif arg.startswith("-"):
-            # Unknown flag - add to global flags
-            global_flags.append(arg)
-            i += 1
-            continue
-
-        else:
-            # This is a positional argument (prompt or subcommand)
-            # If we haven't seen a subcommand yet, this is a direct prompt
-            if subcommand is None:
-                # Direct prompt - all remaining args are the prompt
-                prompt = " ".join(cmd_args[i:])
-                return cmd_direct_prompt(prompt, argparse.Namespace(), global_flags)
-            else:
-                subcommand_args.append(arg)
-                i += 1
-                continue
-
-        i += 1
-
-    # If no subcommand was found, show help
-    if subcommand is None:
-        print_help()
-        return 1
-
-    # Execute subcommand
-    if subcommand == "setup":
-        token = subcommand_args[0] if subcommand_args else None
-        args = argparse.Namespace(token=token)
+    # Determine mode and dispatch
+    if args.command == "setup":
         return cmd_setup(args)
-
-    elif subcommand == "setup-c3po":
-        if len(subcommand_args) < 2:
-            print("Error: setup-c3po requires url and token", file=sys.stderr)
-            print("Usage: claude-docker setup-c3po <url> <token>", file=sys.stderr)
-            return 1
-        args = argparse.Namespace(url=subcommand_args[0], token=subcommand_args[1])
+    elif args.command == "setup-c3po":
         return cmd_setup_c3po(args)
-
-    elif subcommand == "shell":
-        return cmd_shell(argparse.Namespace())
-
-    elif subcommand == "agent":
-        return cmd_agent(subcommand_args, argparse.Namespace(), global_flags)
-
-    return 1
+    elif args.command == "shell":
+        return cmd_shell(args)
+    elif args.command == "agent":
+        if args.agent_cmd == "list":
+            return cmd_agent_list(args)
+        elif args.agent_cmd == "run":
+            return cmd_agent_run(args)
+    else:
+        # Direct prompt mode
+        return cmd_direct_prompt(args.prompt if args.prompt else "", args)
 
 
 if __name__ == "__main__":
     # Register signal handlers for cleanup
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, claude_docker.signal_handler)
+    signal.signal(signal.SIGTERM, claude_docker.signal_handler)
     sys.exit(main())

@@ -1,1 +1,19 @@
 agents.yaml
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+env/
+venv/
+ENV/
+.venv.local/
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+

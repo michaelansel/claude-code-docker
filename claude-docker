@@ -33,4 +33,4 @@ setup_venv() {
 setup_venv
 
 # Run Python implementation
-exec "$VENV_DIR/bin/python3" "$SCRIPT_DIR/claude-docker.py" "$@"
+exec "$VENV_DIR/bin/python3" "$SCRIPT_DIR/claude_docker.py" "$@"
