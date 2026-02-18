@@ -769,10 +769,6 @@ Examples:
 
 def main():
     """Main entry point with argparse-based argument parsing."""
-    # Load agents early for validation
-    agents = load_agents() or {}
-    agent_choices = list(agents.keys()) + ["list"]
-
     parser = argparse.ArgumentParser(
         prog="claude-docker",
         description="Run Claude Code inside Docker/Finch containers",
@@ -784,11 +780,10 @@ def main():
         epilog="""
 Examples:
   claude-docker -p "hello world"   Run a prompt
-  claude-docker -d /path agent notes   Run agent with specific directory
-  claude-docker agent <name>       Run named agent
-  claude-docker agent list         List available agents
-  claude-docker setup              Set up authentication
-  claude-docker shell              Interactive shell
+  claude-docker agent run notes     Run named agent
+  claude-docker agent list          List available agents
+  claude-docker setup               Set up authentication
+  claude-docker shell               Interactive shell
         """
     )
 
@@ -845,7 +840,11 @@ Examples:
     agent_parser.add_argument("--no-log-stream", action="store_true",
                         help="Disable session logging")
     agent_parser.add_argument("--log-dir", help="Override log directory")
-    agent_parser.add_argument("agent_name", nargs="?", choices=agent_choices, help="Agent name to run or 'list'")
+
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_cmd", help="Agent command")
+    agent_subparsers.add_parser("list", help="List available agents")
+    agent_run_parser = agent_subparsers.add_parser("run", help="Run named agent")
+    agent_run_parser.add_argument("agent_name", help="Agent name")
 
     args = parser.parse_args()
 
@@ -859,16 +858,13 @@ Examples:
     elif args.command == "clean-logs":
         return cmd_clean_logs(args)
     elif args.command == "agent":
-        # Handle both "agent list" and "agent <name>"
-        if not hasattr(args, 'agent_name') or not args.agent_name:
-            # No agent name provided - show help
+        if args.agent_cmd == "list":
+            return cmd_agent_list(args)
+        elif args.agent_cmd == "run":
+            return cmd_agent_run(args)
+        else:
             agent_parser.print_help()
             return 2
-        elif args.agent_name == "list":
-            return cmd_agent_list(args)
-        else:
-            # Direct agent name provided (e.g., "agent notes")
-            return cmd_agent_run(args)
     elif args.command is None:
         if args.prompt:
             # Direct prompt mode with -p flag
