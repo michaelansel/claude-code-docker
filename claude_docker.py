@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -317,6 +318,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
     """Handle setup subcommand."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Initialize USER_CONFIG with default logging settings if it doesn't exist
+    if not USER_CONFIG.exists():
+        default_config = {
+            "streamLogging": {
+                "enabled": True,
+                "directory": str(Path.home() / ".claude-docker" / "session-logs"),
+                "retentionDays": 30,
+                "maxFileSizeMB": 10
+            }
+        }
+        USER_CONFIG.write_text(json.dumps(default_config, indent=2) + "\n")
+        USER_CONFIG.chmod(0o600)
+
     if args.token:
         token = args.token
         if not (token.startswith("sk-ant-") or token.startswith("sk-at-")):
@@ -348,6 +362,62 @@ def cmd_setup(args: argparse.Namespace) -> int:
     TOKEN_FILE.write_text(m.group(1) + "\n")
     TOKEN_FILE.chmod(0o600)
     print(f"Token saved to {TOKEN_FILE}", file=sys.stderr)
+    return 0
+
+
+def cmd_clean_logs(args: argparse.Namespace) -> int:
+    """Handle clean-logs subcommand."""
+    import shutil
+
+    # Read configuration for retention settings
+    try:
+        if USER_CONFIG.exists():
+            import yaml
+            with open(USER_CONFIG) as f:
+                config = yaml.safe_load(f) or {}
+                stream_log_config = config.get("streamLogging", {})
+                retention_days = stream_log_config.get("retentionDays", 30)
+            log_dir = Path(stream_log_config.get("directory", str(Path.home() / ".claude-docker" / "session-logs")))
+        else:
+            retention_days = 30
+            log_dir = Path.home() / ".claude-docker" / "session-logs"
+    except Exception:
+        retention_days = 30
+        log_dir = Path.home() / ".claude-docker" / "session-logs"
+
+    # If --older-than flag is provided, use it, otherwise use config
+    if args.older_than:
+        try:
+            retention_days = int(args.older_than.rstrip('d'))
+        except ValueError:
+            print(f"Error: --older-than must be a number followed by 'd' (e.g., 7d)", file=sys.stderr)
+            return 1
+
+    # Calculate cutoff timestamp
+    cutoff = datetime.now() - timedelta(days=retention_days)
+
+    # Delete old log files
+    deleted_count = 0
+    total_size = 0
+
+    if log_dir.exists():
+        for log_file in log_dir.glob("*.json"):
+            try:
+                file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
+                if file_mtime < cutoff:
+                    file_size = log_file.stat().st_size
+                    log_dir.joinpath(log_file).unlink()
+                    deleted_count += 1
+                    total_size += file_size
+            except Exception as e:
+                print(f"Error deleting {log_file}: {e}", file=sys.stderr)
+
+    # Print summary
+    print(f"Cleaned up {deleted_count} log file(s)", file=sys.stderr)
+    if total_size > 0:
+        total_size_mb = total_size / (1024 * 1024)
+        print(f"Total size freed: {total_size_mb:.2f} MB", file=sys.stderr)
+
     return 0
 
 
@@ -483,7 +553,7 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
     # Parse args for global flags (stream settings)
     global_flags = []
     for arg in sys.argv[1:]:
-        if arg in ("-s", "-sj", "--no-stream", "-b"):
+        if arg in ("-s", "-sj", "--no-stream", "-b", "--log-stream", "--no-log-stream", "--log-dir"):
             global_flags.append(arg)
 
     project_name = agent_name
@@ -638,6 +708,7 @@ def print_help():
   claude-docker shell              Interactive shell in container
   claude-docker agent list         List available agents
   claude-docker agent <name>       Run named agent
+  claude-docker clean-logs         Clean up old session logs
 
 Options:
   -h, --help       Show this help message and exit
@@ -648,6 +719,10 @@ Options:
   -b, --build      Rebuild image before running
   -p, --prompt PROMPT  Prompt to run
 
+  --log-stream      Enable session logging (default: enabled)
+  --no-log-stream   Disable session logging
+  --log-dir PATH    Override log directory (default: ~/.claude-docker/session-logs)
+
 Examples:
   claude-docker -p "hello world"   Run a prompt
   claude-docker -d /path agent notes   Run agent with specific directory
@@ -655,6 +730,7 @@ Examples:
   claude-docker agent list         List available agents
   claude-docker setup              Set up authentication
   claude-docker shell              Interactive shell
+  claude-docker clean-logs         Clean up old session logs
 """
     print(help_text)
 
@@ -686,12 +762,14 @@ Examples:
                         help="Disable streaming")
     parser.add_argument("-b", "--build", action="store_true",
                         help="Rebuild image before running")
+    parser.add_argument("--log-stream", action="store_true",
+                        help="Enable session logging")
+    parser.add_argument("--no-log-stream", action="store_true",
+                        help="Disable session logging")
+    parser.add_argument("--log-dir", help="Override log directory")
 
     # Subcommands
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
-
-    # Direct prompt (positional)
-    parser.add_argument("prompt", nargs="*", help="Prompt to run (direct mode)")
 
     # setup
     setup_parser = subparsers.add_parser("setup", help="Set up authentication")
@@ -705,6 +783,13 @@ Examples:
 
     # shell
     subparsers.add_parser("shell", help="Interactive shell in container")
+
+    # clean-logs
+    clean_logs_parser = subparsers.add_parser("clean-logs", help="Clean up old session logs")
+    clean_logs_parser.add_argument("--older-than", help="Delete logs older than X days (e.g., 7d, 30d)")
+
+    # Direct prompt (positional) - only if no subcommand specified and prompt is provided
+    parser.add_argument("prompt", nargs="*", help="Prompt to run (direct mode)", default=None)
 
     # agent
     agent_parser = subparsers.add_parser("agent", help="Run named agent")
@@ -723,14 +808,29 @@ Examples:
         return cmd_setup_c3po(args)
     elif args.command == "shell":
         return cmd_shell(args)
+    elif args.command == "clean-logs":
+        return cmd_clean_logs(args)
     elif args.command == "agent":
         if args.agent_cmd == "list":
             return cmd_agent_list(args)
         elif args.agent_cmd == "run":
             return cmd_agent_run(args)
+        else:
+            # No subcommand provided - show help
+            parser.print_help()
+            return 2
+    elif args.command is None:
+        # No subcommand and no prompt - show usage
+        parser.print_help()
+        return 2
     else:
         # Direct prompt mode
-        return cmd_direct_prompt(args.prompt if args.prompt else "", args)
+        # Parse global flags for log control
+        global_flags = []
+        for arg in sys.argv[1:]:
+            if arg in ("--log-stream", "--no-log-stream", "--log-dir"):
+                global_flags.append(arg)
+        return cmd_direct_prompt(args.prompt if args.prompt else "", args, global_flags)
 
 
 if __name__ == "__main__":

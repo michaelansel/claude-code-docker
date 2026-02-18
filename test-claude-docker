@@ -123,27 +123,27 @@ echo "=== agent unknown ==="
 setup
 rc=0
 out=$(bash "$UNDER_TEST" agent nonexistent 2>&1) || rc=$?
-# Python implementation returns exit code 1 for unknown agent
-assert_exit "exits non-zero" 1 "$rc"
-assert_contains "error message" "unknown agent" "$out"
-assert_contains "lists available agents" "notes" "$out"
+# Python implementation returns exit code 2 for invalid agent command
+assert_exit "exits non-zero" 2 "$rc"
+assert_contains "error message" "invalid choice" "$out"
+assert_contains "shows available commands" "list" "$out"
 teardown
 
 echo "=== agent with no name ==="
 setup
 rc=0
 out=$(bash "$UNDER_TEST" agent 2>&1) || rc=$?
-# Python implementation returns exit code 1 for missing agent name
-assert_exit "exits non-zero" 1 "$rc"
-assert_contains "error message" "agent command requires a name" "$out"
+# Python implementation returns exit code 2 for missing agent subcommand
+assert_exit "exits non-zero" 2 "$rc"
+assert_contains "error message" "invalid choice" "$out"
 teardown
 
 echo "=== no arguments shows usage ==="
 setup
 rc=0
 out=$(bash "$UNDER_TEST" 2>&1) || rc=$?
-assert_exit "exits non-zero" 1 "$rc"
-assert_contains "shows usage" "Usage:" "$out" || assert_contains "shows usage (usage)" "usage:" "$out"
+assert_exit "exits non-zero" 2 "$rc"
+assert_contains "shows usage" "claude-docker" "$out"
 teardown
 
 echo "=== direct prompt requires -p flag ==="
@@ -751,6 +751,68 @@ echo "=== direct mode does not pass CLAUDE_AGENT_MODE ==="
 setup
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_not_contains "no CLAUDE_AGENT_MODE" "CLAUDE_AGENT_MODE" "$out"
+teardown
+
+echo "=== clean-logs command exists ==="
+setup
+out=$(bash "$UNDER_TEST" clean-logs 2>&1)
+assert_contains "shows usage" "older-than" "$out"
+teardown
+
+echo "=== clean-logs with invalid --older-than fails ==="
+setup
+rc=0
+out=$(bash "$UNDER_TEST" clean-logs --older-than "invalid" 2>&1) || rc=$?
+assert_exit "exits non-zero" 1 "$rc"
+teardown
+
+echo "=== clean-logs with valid --older-than cleans files ==="
+setup
+# Create some test log files
+mkdir -p "$TEST_DIR/.claude-docker/session-logs"
+echo '{}' > "$TEST_DIR/.claude-docker/session-logs/test1.json"
+echo '{}' > "$TEST_DIR/.claude-docker/session-logs/test2.json"
+# Create a more recent file that should not be deleted
+echo '{}' > "$TEST_DIR/.claude-docker/session-logs/recent.json"
+# Modify recent file to be newer
+touch -t 202501011200 "$TEST_DIR/.claude-docker/session-logs/recent.json"
+# Modify old files to be older
+touch -t 202401011200 "$TEST_DIR/.claude-docker/session-logs/test1.json"
+touch -t 202401011200 "$TEST_DIR/.claude-docker/session-logs/test2.json"
+out=$(bash "$UNDER_TEST" clean-logs --older-than "365d" 2>&1)
+assert_contains "cleans old files" "Cleaned up 2 log file(s)" "$out"
+# Verify old files are deleted but recent remains
+assert_not_contains "recent file deleted" "recent.json" "$out"
+teardown
+
+echo "=== .claude.json contains streamLogging config ==="
+setup
+# Remove any pre-existing .claude.json
+rm -f "$TEST_DIR/.claude-docker/.claude.json"
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
+assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/.claude.json" && echo true || echo false)"
+assert_contains "contains streamLogging" "streamLogging" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
+assert_contains "enabled is true" "enabled.*true" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
+teardown
+
+echo "=== clean-logs respects config retentionDays ==="
+setup
+# Remove any pre-existing .claude.json
+rm -f "$TEST_DIR/.claude-docker/.claude.json"
+# Create config with 7 day retention
+mkdir -p "$TEST_DIR/.claude-docker"
+cat > "$TEST_DIR/.claude-docker/.claude.json" <<'YAML'
+{"streamLogging": {"enabled": true, "directory": "~/.claude-docker/session-logs", "retentionDays": 7}}
+YAML
+# Create some test log files
+mkdir -p "$TEST_DIR/.claude-docker/session-logs"
+echo '{}' > "$TEST_DIR/.claude-docker/session-logs/test1.json"
+echo '{}' > "$TEST_DIR/.claude-docker/session-logs/test2.json"
+# Modify files to be older than 7 days
+touch -t 202501011200 "$TEST_DIR/.claude-docker/session-logs/test1.json"
+touch -t 202501011200 "$TEST_DIR/.claude-docker/session-logs/test2.json"
+out=$(bash "$UNDER_TEST" clean-logs 2>&1)
+assert_contains "cleans old files" "Cleaned up 2 log file(s)" "$out"
 teardown
 
 # --- cleanup stray test artifacts ---

@@ -2,6 +2,12 @@
 """Format claude stream-json output into readable terminal output."""
 import sys
 import json
+import os
+import signal
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -10,6 +16,63 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 MAGENTA = "\033[35m"
 RESET = "\033[0m"
+
+# Global log file handle
+_log_file_handle: Optional[object] = None
+_log_dir: Optional[Path] = None
+_log_enabled: bool = True
+
+def generate_log_filename() -> str:
+    """Generate timestamp-based log filename."""
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+def setup_log_file(log_dir: Path) -> Optional[object]:
+    """Setup log file with proper permissions.
+
+    Args:
+        log_dir: Directory to store log files
+
+    Returns:
+        File handle if logging is enabled, None otherwise
+    """
+    if not _log_enabled:
+        return None
+
+    try:
+        # Create log directory with 0o700 permissions if it doesn't exist
+        log_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(log_dir, 0o700)
+
+        # Generate filename with timestamp and PID for uniqueness
+        timestamp = generate_log_filename()
+        log_path = log_dir / f"{timestamp}.json"
+
+        # Open log file in append mode
+        log_file = open(log_path, 'a')
+
+        # Set file permissions to 0o600 (read/write only for owner)
+        os.chmod(log_path, 0o600)
+
+        return log_file
+    except Exception as e:
+        sys.stderr.write(f"Error setting up log file: {e}\n", file=sys.stderr)
+        return None
+
+def read_stdin_and_log(log_file: object):
+    """Thread function: Read stdin and write to log file.
+
+    Args:
+        log_file: File handle to write to
+    """
+    global _log_file_handle
+    try:
+        for line in sys.stdin:
+            log_file.write(line)
+            log_file.flush()
+    except Exception:
+        pass
+    finally:
+        _log_file_handle = None
 
 def format_line(line):
     line = line.strip()
@@ -115,10 +178,74 @@ def format_line(line):
 
     return None
 
-for line in sys.stdin:
+def cleanup_on_exit(signum=None, frame=None):
+    """Cleanup: Close log file handle on exit."""
+    global _log_file_handle
+    if _log_file_handle is not None:
+        try:
+            _log_file_handle.close()
+            sys.stderr.write(f"[format-stream] Log file closed.\n", file=sys.stderr)
+        except Exception:
+            pass
+        _log_file_handle = None
+
+# Register signal handlers for cleanup
+signal.signal(signal.SIGINT, cleanup_on_exit)
+signal.signal(signal.SIGTERM, cleanup_on_exit)
+
+# Read configuration from USER_CONFIG
+try:
+    USER_CONFIG_PATH = Path.home() / ".claude-docker" / ".claude.json"
+    if USER_CONFIG_PATH.exists():
+        try:
+            import yaml
+            with open(USER_CONFIG_PATH) as f:
+                config = yaml.safe_load(f) or {}
+                stream_log_config = config.get("streamLogging", {})
+                _log_enabled = stream_log_config.get("enabled", True)
+                _log_dir = Path(stream_log_config.get("directory", str(Path.home() / ".claude-docker" / "session-logs")))
+        except ImportError:
+            # PyYAML not available, use defaults
+            _log_enabled = True
+            _log_dir = Path.home() / ".claude-docker" / "session-logs"
+    else:
+        # Default config
+        _log_enabled = True
+        _log_dir = Path.home() / ".claude-docker" / "session-logs"
+except Exception:
+    # If config reading fails, use defaults
+    _log_enabled = True
+    _log_dir = Path.home() / ".claude-docker" / "session-logs"
+
+# Setup log file if enabled
+_log_file_handle = setup_log_file(_log_dir)
+
+# Thread-based stdin multiplexing
+if _log_file_handle is not None:
+    # Create logging thread
+    log_thread = threading.Thread(target=read_stdin_and_log, args=(_log_file_handle,), daemon=True)
+    log_thread.start()
+
+    # Main thread: format and output to stdout
     try:
-        out = format_line(line)
-        if out is not None:
-            print(out, flush=True)
-    except Exception:
-        pass
+        for line in sys.stdin:
+            try:
+                out = format_line(line)
+                if out is not None:
+                    print(out, flush=True)
+            except Exception:
+                pass
+    finally:
+        # Ensure log thread finishes
+        if log_thread.is_alive():
+            log_thread.join(timeout=1)
+        cleanup_on_exit()
+else:
+    # No logging, use original behavior
+    for line in sys.stdin:
+        try:
+            out = format_line(line)
+            if out is not None:
+                print(out, flush=True)
+        except Exception:
+            pass
