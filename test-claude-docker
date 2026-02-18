@@ -135,7 +135,7 @@ rc=0
 out=$(bash "$UNDER_TEST" agent 2>&1) || rc=$?
 # Python implementation returns exit code 2 for missing agent subcommand
 assert_exit "exits non-zero" 2 "$rc"
-assert_contains "error message" "invalid choice" "$out"
+assert_contains "error message" "usage:" "$out"
 teardown
 
 echo "=== no arguments shows usage ==="
