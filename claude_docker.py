@@ -849,7 +849,9 @@ Examples:
     clean_logs_parser.add_argument("--older-than", help="Delete logs older than X days (e.g., 7d, 30d)")
 
     # agent
-    agent_parser = subparsers.add_parser("agent", help="Run named agent")
+    agent_parser = subparsers.add_parser("agent",
+        help="Run named agent",
+        description="Manage agents: agent list or agent run <name>")
     # Add global flags to agent parser so they're recognized
     agent_parser.add_argument("-s", "--stream", action="store_true",
                         help="Stream formatted output")
@@ -865,7 +867,7 @@ Examples:
                         help="Disable session logging")
     agent_parser.add_argument("--log-dir", help="Override log directory")
 
-    agent_subparsers = agent_parser.add_subparsers(dest="agent_cmd", help="Agent command")
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_cmd", help="Agent command (list or run <name>)")
     agent_subparsers.add_parser("list", help="List available agents")
     agent_run_parser = agent_subparsers.add_parser("run", help="Run named agent")
     agent_run_parser.add_argument("agent_name", help="Agent name")
