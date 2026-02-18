@@ -908,9 +908,18 @@ Examples:
         if args.prompt:
             # Direct prompt mode with -p flag
             global_flags = []
-            for arg in sys.argv[1:]:
-                if arg in ("--log-stream", "--no-log-stream", "--log-dir"):
+            i = 0
+            while i < len(sys.argv[1:]):
+                arg = sys.argv[i + 1]
+                if arg in ("-s", "-sj", "--stream", "--stream-json", "--no-stream", "-b", "--build",
+                           "--log-stream", "--no-log-stream", "--log-dir", "-d", "--dir"):
                     global_flags.append(arg)
+                    if arg in ("-d", "--dir", "--log-dir") and i + 1 < len(sys.argv[1:]):
+                        global_flags.append(sys.argv[i + 2])
+                        i += 1
+                elif arg.startswith("--dir=") or arg.startswith("-d="):
+                    global_flags.append(arg)
+                i += 1
             return cmd_direct_prompt(args.prompt, args, global_flags)
         else:
             # No subcommand and no prompt - show help
