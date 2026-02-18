@@ -234,30 +234,40 @@ def run_container(args: List[str], stream: bool = True, stream_raw: bool = False
     cmd = [runtime] + args
 
     if stream and not stream_raw:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        # Find format-stream in SCRIPT_DIR or PATH
-        format_stream_path = SCRIPT_DIR / "format-stream"
-        if not format_stream_path.exists():
-            # Try to find in PATH
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ)
+            # Find format-stream in PATH first (for tests), then SCRIPT_DIR
             format_stream_path = shutil.which("format-stream")
             if not format_stream_path:
+                # Fallback to SCRIPT_DIR
                 format_stream_path = SCRIPT_DIR / "format-stream"
-        format_proc = subprocess.Popen(
-            [str(format_stream_path)],
-            stdin=proc.stdout,
-            stdout=sys.stdout,
-            stderr=sys.stderr
-        )
-        proc.stdout.close()
-        format_proc.wait()
-        # Cleanup on normal exit
-        cleanup_container(runtime)
-        return format_proc.returncode
+            format_proc = subprocess.Popen(
+                [str(format_stream_path)] if isinstance(format_stream_path, Path) else format_stream_path,
+                stdin=proc.stdout,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                env=os.environ
+            )
+            proc.stdout.close()
+            format_proc.wait()
+            # Cleanup on normal exit
+            cleanup_container(runtime)
+            return format_proc.returncode
+        except Exception as e:
+            print(f"Error running container: {e}", file=sys.stderr)
+            sys.stderr.flush()
+            cleanup_container(runtime)
+            return 1
     else:
-        result = subprocess.run(cmd)
-        # Cleanup on normal exit
-        cleanup_container(runtime)
-        return result.returncode
+        try:
+            result = subprocess.run(cmd)
+            # Cleanup on normal exit
+            cleanup_container(runtime)
+            return result.returncode
+        except Exception as e:
+            print(f"Error running container: {e}", file=sys.stderr)
+            cleanup_container(runtime)
+            return 1
 
 
 def build_docker_args(
@@ -433,6 +443,11 @@ def cmd_clean_logs(args: argparse.Namespace) -> int:
 
 def cmd_setup_c3po(args: argparse.Namespace) -> int:
     """Handle setup-c3po subcommand."""
+    if not args.url or not args.token:
+        print("Error: setup-c3po requires two arguments: url and token", file=sys.stderr)
+        print("Usage: claude-docker setup-c3po <url> <token>", file=sys.stderr)
+        return 1
+
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     if not USER_CONFIG.exists():
@@ -618,6 +633,7 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
 
 def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -> int:
     """Handle direct prompt (non-agent) mode."""
+    import sys
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         pass
     elif TOKEN_FILE.exists():
@@ -632,6 +648,7 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
         print("", file=sys.stderr)
         print("Or set CLAUDE_CODE_OAUTH_TOKEN environment variable manually.", file=sys.stderr)
         return 1
+
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
@@ -658,7 +675,13 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
     # Check if -b flag forces a rebuild
     force_rebuild = "-b" in flags
 
-    if force_rebuild or needs_rebuild(runtime):
+    try:
+        should_rebuild = force_rebuild or needs_rebuild(runtime)
+    except Exception as e:
+        print(f"Error checking rebuild: {e}", file=sys.stderr)
+        should_rebuild = True
+
+    if should_rebuild:
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
         subprocess.run([
             runtime, "build",
@@ -666,6 +689,7 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
             "-t", IMAGE_NAME,
             str(SCRIPT_DIR)
         ], check=True)
+
 
     # Parse flags for options
     work_dir = None
@@ -779,11 +803,11 @@ def main():
               "                     [prompt ...]",
         epilog="""
 Examples:
-  claude-docker -p "hello world"   Run a prompt
-  claude-docker agent run notes     Run named agent
-  claude-docker agent list          List available agents
-  claude-docker setup               Set up authentication
-  claude-docker shell               Interactive shell
+  claude-docker -p "hello world"        Run a prompt
+  claude-docker agent run notes          Run named agent
+  claude-docker agent list               List available agents
+  claude-docker setup                    Set up authentication
+  claude-docker shell                    Interactive shell
         """
     )
 
@@ -814,8 +838,8 @@ Examples:
     # setup-c3po
     setup_c3po_parser = subparsers.add_parser("setup-c3po",
         help="Install and enroll c3po plugin")
-    setup_c3po_parser.add_argument("url", help="Coordinator URL")
-    setup_c3po_parser.add_argument("token", help="Admin token")
+    setup_c3po_parser.add_argument("url", nargs="?", help="Coordinator URL")
+    setup_c3po_parser.add_argument("token", nargs="?", help="Admin token")
 
     # shell
     subparsers.add_parser("shell", help="Interactive shell in container")
