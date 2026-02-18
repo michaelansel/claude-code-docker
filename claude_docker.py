@@ -405,7 +405,7 @@ def cmd_clean_logs(args: argparse.Namespace) -> int:
                 config = yaml.safe_load(f) or {}
                 stream_log_config = config.get("streamLogging", {})
                 retention_days = stream_log_config.get("retentionDays", 30)
-            log_dir = Path(stream_log_config.get("directory", str(Path.home() / ".claude-docker" / "session-logs")))
+            log_dir = Path(stream_log_config.get("directory", str(Path.home() / ".claude-docker" / "session-logs"))).expanduser()
         else:
             retention_days = 30
             log_dir = Path.home() / ".claude-docker" / "session-logs"

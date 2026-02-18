@@ -340,7 +340,7 @@ rm -f "$TEST_DIR/.claude-docker/claude-docker.yaml"
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_eq "claude-docker.yaml exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/claude-docker.yaml" && echo true || echo false)"
 assert_contains "contains streamLogging" "streamLogging" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
-assert_contains "enabled is true" "enabled.*true" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
+assert_contains "enabled is true" "enabled: true" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
 teardown
 
 echo "=== claude-docker.yaml is always mounted ==="
@@ -791,11 +791,11 @@ echo '{}' > "$TEST_DIR/.claude-docker/session-logs/test1.json"
 echo '{}' > "$TEST_DIR/.claude-docker/session-logs/test2.json"
 # Create a more recent file that should not be deleted
 echo '{}' > "$TEST_DIR/.claude-docker/session-logs/recent.json"
-# Modify recent file to be newer
-touch -t 202501011200 "$TEST_DIR/.claude-docker/session-logs/recent.json"
-# Modify old files to be older
-touch -t 202401011200 "$TEST_DIR/.claude-docker/session-logs/test1.json"
-touch -t 202401011200 "$TEST_DIR/.claude-docker/session-logs/test2.json"
+# Modify recent file to be newer (Feb 15, 2026 - within 365 days)
+touch -t 202602151200 "$TEST_DIR/.claude-docker/session-logs/recent.json"
+# Modify old files to be older (Jan 15, 2025 - older than 365 days)
+touch -t 202501151200 "$TEST_DIR/.claude-docker/session-logs/test1.json"
+touch -t 202501151200 "$TEST_DIR/.claude-docker/session-logs/test2.json"
 out=$(bash "$UNDER_TEST" clean-logs --older-than "365d" 2>&1)
 assert_contains "cleans old files" "Cleaned up 2 log file(s)" "$out"
 # Verify old files are deleted but recent remains
@@ -809,7 +809,7 @@ rm -f "$TEST_DIR/.claude-docker/claude-docker.yaml"
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_eq ".claude-docker.yaml exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/claude-docker.yaml" && echo true || echo false)"
 assert_contains "contains streamLogging" "streamLogging" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
-assert_contains "enabled is true" "enabled.*true" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
+assert_contains "enabled is true" "enabled: true" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
 teardown
 
 echo "=== clean-logs respects config retentionDays ==="
