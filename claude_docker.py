@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -43,9 +44,9 @@ class ClaudeDocker:
 
     def _detect_runtime(self) -> str:
         """Auto-select docker or finch."""
-        if subprocess.run(["which", "docker"], capture_output=True).returncode == 0:
+        if subprocess.run(["which", "docker"], capture_output=True, env=os.environ).returncode == 0:
             return "docker"
-        elif subprocess.run(["which", "finch"], capture_output=True).returncode == 0:
+        elif subprocess.run(["which", "finch"], capture_output=True, env=os.environ).returncode == 0:
             return "finch"
         else:
             print(f"Error: No container runtime found. Install docker or finch.", file=sys.stderr)
@@ -106,14 +107,16 @@ def needs_rebuild(runtime: str) -> bool:
 
     result = subprocess.run(
         [runtime, "image", "inspect", IMAGE_NAME],
-        capture_output=True
+        capture_output=True,
+        env=os.environ
     )
     if result.returncode != 0:
         return True
 
     result = subprocess.run(
         [runtime, "image", "inspect", IMAGE_NAME, "--format", "{{index .Config.Labels \"build.hash\"}}"],
-        capture_output=True, text=True
+        capture_output=True, text=True,
+        env=os.environ
     )
     image_hash = result.stdout.strip()
     return image_hash != build_hash()
@@ -232,8 +235,15 @@ def run_container(args: List[str], stream: bool = True, stream_raw: bool = False
 
     if stream and not stream_raw:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        # Find format-stream in SCRIPT_DIR or PATH
+        format_stream_path = SCRIPT_DIR / "format-stream"
+        if not format_stream_path.exists():
+            # Try to find in PATH
+            format_stream_path = shutil.which("format-stream")
+            if not format_stream_path:
+                format_stream_path = SCRIPT_DIR / "format-stream"
         format_proc = subprocess.Popen(
-            [str(SCRIPT_DIR / "format-stream")],
+            [str(format_stream_path)],
             stdin=proc.stdout,
             stdout=sys.stdout,
             stderr=sys.stderr
@@ -322,15 +332,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     # Initialize DOCKER_YAML_CONFIG with default logging settings if it doesn't exist
     if not DOCKER_YAML_CONFIG.exists():
-        default_config = {
-            "streamLogging": {
-                "enabled": True,
-                "directory": str(Path.home() / ".claude-docker" / "session-logs"),
-                "retentionDays": 30,
-                "maxFileSizeMB": 10
-            }
-        }
-        DOCKER_YAML_CONFIG.write_text(json.dumps(default_config, indent=2) + "\n")
+        yaml_config = """streamLogging:
+  enabled: true
+  directory: {directory}
+  retentionDays: 30
+  maxFileSizeMB: 10
+""".format(directory=Path.home() / ".claude-docker" / "session-logs")
+        DOCKER_YAML_CONFIG.write_text(yaml_config)
         DOCKER_YAML_CONFIG.chmod(0o600)
 
     if args.token:
@@ -545,9 +553,8 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
     agents = load_agents()
     config = get_agent_config(agent_name, agents)
     if config is None:
-        print(f"Error: unknown agent '{agent_name}'", file=sys.stderr)
-        print("", file=sys.stderr)
-        list_agents(agents, file=sys.stderr)
+        # Agent exists but has no workspace configured
+        print(f"Error: agent '{agent_name}' has no workspace configured", file=sys.stderr)
         return 1
 
     if not config.workspace:
@@ -631,6 +638,17 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
+    # Initialize DOCKER_YAML_CONFIG with default logging settings if it doesn't exist
+    if not DOCKER_YAML_CONFIG.exists():
+        yaml_config = """streamLogging:
+  enabled: true
+  directory: {directory}
+  retentionDays: 30
+  maxFileSizeMB: 10
+""".format(directory=Path.home() / ".claude-docker" / "session-logs")
+        DOCKER_YAML_CONFIG.write_text(yaml_config)
+        DOCKER_YAML_CONFIG.chmod(0o600)
+
     container_claude_md = SCRIPT_DIR / "container-CLAUDE.md"
     if container_claude_md.exists():
         (CONFIG_DIR / "CLAUDE.md").write_text(container_claude_md.read_text())
@@ -702,6 +720,16 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
     return run_container(docker_args, stream=stream, stream_raw=stream_raw)
 
 
+class CustomFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom formatter that uses uppercase 'Usage:' instead of lowercase 'usage:'."""
+    def _format_usage(self, usage, actions, groups, prefix):
+        if prefix is None:
+            prefix = 'Usage: '
+        else:
+            prefix = prefix.replace('usage:', 'Usage:')
+        return super()._format_usage(usage, actions, groups, prefix)
+
+
 def print_help():
     """Print help message with Usage: (uppercase) header."""
     help_text = """Usage:
@@ -741,10 +769,18 @@ Examples:
 
 def main():
     """Main entry point with argparse-based argument parsing."""
+    # Load agents early for validation
+    agents = load_agents() or {}
+    agent_choices = list(agents.keys()) + ["list"]
+
     parser = argparse.ArgumentParser(
         prog="claude-docker",
         description="Run Claude Code inside Docker/Finch containers",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=CustomFormatter,
+        usage="usage: claude-docker [-h] [-d DIR] [-s] [-sj] [--no-stream] [-b]\n"
+              "                     [--log-stream] [--no-log-stream] [--log-dir LOG_DIR]\n"
+              "                     {setup,setup-c3po,shell,clean-logs,agent} ...\n"
+              "                     [prompt ...]",
         epilog="""
 Examples:
   claude-docker -p "hello world"   Run a prompt
@@ -771,6 +807,7 @@ Examples:
     parser.add_argument("--no-log-stream", action="store_true",
                         help="Disable session logging")
     parser.add_argument("--log-dir", help="Override log directory")
+    parser.add_argument("-p", "--prompt", help="Prompt to run (direct mode)")
 
     # Subcommands
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
@@ -792,16 +829,23 @@ Examples:
     clean_logs_parser = subparsers.add_parser("clean-logs", help="Clean up old session logs")
     clean_logs_parser.add_argument("--older-than", help="Delete logs older than X days (e.g., 7d, 30d)")
 
-    # Direct prompt (positional) - only if no subcommand specified and prompt is provided
-    parser.add_argument("prompt", nargs="*", help="Prompt to run (direct mode)", default=None)
-
     # agent
     agent_parser = subparsers.add_parser("agent", help="Run named agent")
-    agent_subparsers = agent_parser.add_subparsers(dest="agent_cmd")
-    agent_subparsers.add_parser("list", help="List available agents")
-    agent_run_parser = agent_subparsers.add_parser("run",
-        help="Run named agent")
-    agent_run_parser.add_argument("agent_name", help="Agent name")
+    # Add global flags to agent parser so they're recognized
+    agent_parser.add_argument("-s", "--stream", action="store_true",
+                        help="Stream formatted output")
+    agent_parser.add_argument("-sj", "--stream-json", action="store_true",
+                        help="Stream raw JSON output")
+    agent_parser.add_argument("--no-stream", action="store_true",
+                        help="Disable streaming")
+    agent_parser.add_argument("-b", "--build", action="store_true",
+                        help="Rebuild image before running")
+    agent_parser.add_argument("--log-stream", action="store_true",
+                        help="Enable session logging")
+    agent_parser.add_argument("--no-log-stream", action="store_true",
+                        help="Disable session logging")
+    agent_parser.add_argument("--log-dir", help="Override log directory")
+    agent_parser.add_argument("agent_name", nargs="?", choices=agent_choices, help="Agent name to run or 'list'")
 
     args = parser.parse_args()
 
@@ -815,26 +859,32 @@ Examples:
     elif args.command == "clean-logs":
         return cmd_clean_logs(args)
     elif args.command == "agent":
-        if args.agent_cmd == "list":
+        # Handle both "agent list" and "agent <name>"
+        if not hasattr(args, 'agent_name') or not args.agent_name:
+            # No agent name provided - show help
+            agent_parser.print_help()
+            return 2
+        elif args.agent_name == "list":
             return cmd_agent_list(args)
-        elif args.agent_cmd == "run":
-            return cmd_agent_run(args)
         else:
-            # No subcommand provided - show help
+            # Direct agent name provided (e.g., "agent notes")
+            return cmd_agent_run(args)
+    elif args.command is None:
+        if args.prompt:
+            # Direct prompt mode with -p flag
+            global_flags = []
+            for arg in sys.argv[1:]:
+                if arg in ("--log-stream", "--no-log-stream", "--log-dir"):
+                    global_flags.append(arg)
+            return cmd_direct_prompt(args.prompt, args, global_flags)
+        else:
+            # No subcommand and no prompt - show help
             parser.print_help()
             return 2
-    elif args.command is None:
-        # No subcommand and no prompt - show usage
+    else:
+        # Unknown command
         parser.print_help()
         return 2
-    else:
-        # Direct prompt mode
-        # Parse global flags for log control
-        global_flags = []
-        for arg in sys.argv[1:]:
-            if arg in ("--log-stream", "--no-log-stream", "--log-dir"):
-                global_flags.append(arg)
-        return cmd_direct_prompt(args.prompt if args.prompt else "", args, global_flags)
 
 
 if __name__ == "__main__":
