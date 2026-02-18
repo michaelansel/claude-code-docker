@@ -644,13 +644,24 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
     # Determine prompt: CLI flag > config > default (None = /c3po auto)
     agent_prompt = getattr(args, 'prompt', None) or config.prompt
 
+    # Merge environment variables: config env + CLI env (CLI overrides config)
+    merged_env = dict(config.env)
+    if hasattr(args, 'env_vars') and args.env_vars:
+        for env_var in args.env_vars:
+            if '=' in env_var:
+                key, value = env_var.split('=', 1)
+                merged_env[key] = value
+            else:
+                print(f"Error: Invalid environment variable format '{env_var}'. Use KEY=VALUE", file=sys.stderr)
+                return 1
+
     docker_args, stream = build_docker_args(
         prompt="",
         work_dir=config.workspace,
         project_name=project_name,
         agent_mode=True,
         agent_model=config.model,
-        agent_env=config.env,
+        agent_env=merged_env,
         agent_init=config.init,
         stream=agent_stream,
         stream_raw=agent_stream_raw,
@@ -899,6 +910,8 @@ Examples:
     agent_subparsers.add_parser("list", help="List available agents")
     agent_run_parser = agent_subparsers.add_parser("run", help="Run named agent")
     agent_run_parser.add_argument("agent_name", help="Agent name")
+    agent_run_parser.add_argument("-e", "--env", action="append", dest="env_vars",
+                                  help="Environment variable (KEY=VALUE, can be used multiple times)")
     agent_run_parser.add_argument("--prompt", help="Custom prompt to override default /c3po auto")
 
     args = parser.parse_args()
