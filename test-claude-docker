@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Tests for claude-docker — exercises argument parsing, agent lookup, and
 # command construction without actually running containers.
-set -euo pipefail
 
 PASS=0
 FAIL=0
