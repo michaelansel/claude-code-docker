@@ -317,21 +317,21 @@ assert_contains "CLAUDE.md has git guidance" "Git is not configured" "$(cat "$TE
 assert_contains "CLAUDE.md has no-commit guidance" "do NOT commit" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
 teardown
 
-echo "=== .claude.json is auto-created when missing ==="
+echo "=== claude-docker.yaml is auto-created when missing ==="
 setup
-# Remove any pre-existing .claude.json
-rm -f "$TEST_DIR/.claude-docker/.claude.json"
+# Remove any pre-existing claude-docker.yaml
+rm -f "$TEST_DIR/.claude-docker/claude-docker.yaml"
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
-assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/.claude.json" && echo true || echo false)"
-assert_eq ".claude.json contains empty object" "{}" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
-assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+assert_eq "claude-docker.yaml exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/claude-docker.yaml" && echo true || echo false)"
+assert_contains "contains streamLogging" "streamLogging" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
+assert_contains "enabled is true" "enabled.*true" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
 teardown
 
-echo "=== .claude.json is always mounted ==="
+echo "=== claude-docker.yaml is always mounted ==="
 setup
-echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/.claude.json"
+echo '{"mcpServers":{}, "streamLogging": {"enabled": true}}' > "$TEST_DIR/.claude-docker/claude-docker.yaml"
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
-assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+assert_contains "mounts claude-docker.yaml" "claude-docker.yaml:/home/node/claude-docker.yaml" "$out"
 teardown
 
 echo "=== setup-c3po requires two arguments ==="
@@ -366,7 +366,7 @@ STUB
 out=$(echo "" | bash "$UNDER_TEST" shell 2>&1)
 assert_contains "uses --entrypoint bash" "--entrypoint bash" "$out"
 assert_contains "uses -it" "-it" "$out"
-assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+assert_contains "mounts claude-docker.yaml" "claude-docker.yaml:/home/node/claude-docker.yaml" "$out"
 teardown
 
 echo "=== help shows setup-c3po ==="
@@ -785,24 +785,27 @@ assert_contains "cleans old files" "Cleaned up 2 log file(s)" "$out"
 assert_not_contains "recent file deleted" "recent.json" "$out"
 teardown
 
-echo "=== .claude.json contains streamLogging config ==="
+echo "=== claude-docker.yaml contains streamLogging config ==="
 setup
-# Remove any pre-existing .claude.json
-rm -f "$TEST_DIR/.claude-docker/.claude.json"
+# Remove any pre-existing claude-docker.yaml
+rm -f "$TEST_DIR/.claude-docker/claude-docker.yaml"
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
-assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/.claude.json" && echo true || echo false)"
-assert_contains "contains streamLogging" "streamLogging" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
-assert_contains "enabled is true" "enabled.*true" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
+assert_eq ".claude-docker.yaml exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/claude-docker.yaml" && echo true || echo false)"
+assert_contains "contains streamLogging" "streamLogging" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
+assert_contains "enabled is true" "enabled.*true" "$(cat "$TEST_DIR/.claude-docker/claude-docker.yaml")"
 teardown
 
 echo "=== clean-logs respects config retentionDays ==="
 setup
-# Remove any pre-existing .claude.json
-rm -f "$TEST_DIR/.claude-docker/.claude.json"
+# Remove any pre-existing claude-docker.yaml
+rm -f "$TEST_DIR/.claude-docker/claude-docker.yaml"
 # Create config with 7 day retention
 mkdir -p "$TEST_DIR/.claude-docker"
-cat > "$TEST_DIR/.claude-docker/.claude.json" <<'YAML'
-{"streamLogging": {"enabled": true, "directory": "~/.claude-docker/session-logs", "retentionDays": 7}}
+cat > "$TEST_DIR/.claude-docker/claude-docker.yaml" <<'YAML'
+streamLogging:
+  enabled: true
+  directory: ~/.claude-docker/session-logs
+  retentionDays: 7
 YAML
 # Create some test log files
 mkdir -p "$TEST_DIR/.claude-docker/session-logs"

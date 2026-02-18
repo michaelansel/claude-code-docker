@@ -195,7 +195,7 @@ signal.signal(signal.SIGTERM, cleanup_on_exit)
 
 # Read configuration from USER_CONFIG
 try:
-    USER_CONFIG_PATH = Path.home() / ".claude-docker" / ".claude.json"
+    USER_CONFIG_PATH = Path.home() / ".claude-docker" / "claude-docker.yaml"
     if USER_CONFIG_PATH.exists():
         try:
             import yaml

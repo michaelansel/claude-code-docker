@@ -22,7 +22,7 @@ IMAGE_NAME = "claude-code"
 CONFIG_DIR = Path.home() / ".claude-docker"
 CREDENTIALS = Path.home() / ".claude" / ".credentials.json"
 TOKEN_FILE = CONFIG_DIR / ".oauth-token"
-USER_CONFIG = CONFIG_DIR / ".claude.json"
+USER_CONFIG = CONFIG_DIR / "claude-docker.yaml"
 AGENTS_FILE = CONFIG_DIR / "agents.yaml"
 
 
@@ -271,7 +271,7 @@ def build_docker_args(
     if CREDENTIALS.exists():
         mounts.extend(["-v", f"{CREDENTIALS}:/home/node/.claude/.credentials.json:ro"])
 
-    mounts.extend(["-v", f"{USER_CONFIG}:/home/node/.claude.json"])
+    mounts.extend(["-v", f"{USER_CONFIG}:/home/node/claude-docker.yaml"])
 
     env_args = ["-e", f"CLAUDE_PROJECT_NAME={project_name}"]
     if agent_mode:
@@ -475,7 +475,7 @@ p.write_text(json.dumps(d, indent=2) + '\\n')
         runtime, "run", "--rm", "-it",
         "--entrypoint", "bash",
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
-        "-v", f"{USER_CONFIG}:/home/node/.claude.json",
+        "-v", f"{USER_CONFIG}:/home/node/claude-docker.yaml",
         IMAGE_NAME,
         "-c", setup_script + cred_script
     ], check=True)
@@ -503,7 +503,7 @@ def cmd_shell(args: argparse.Namespace) -> int:
     shell_mounts = [
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
         "-v", f"{os.getcwd()}:/workspace",
-        "-v", f"{USER_CONFIG}:/home/node/.claude.json",
+        "-v", f"{USER_CONFIG}:/home/node/claude-docker.yaml",
     ]
 
     if CREDENTIALS.exists():

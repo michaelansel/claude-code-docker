@@ -78,7 +78,7 @@ Checked in priority order:
 | Host path | Container path | Notes |
 |-----------|---------------|-------|
 | `~/.claude-docker/` | `/home/node/.claude` | Plugins, settings, credentials persist here |
-| `~/.claude-docker/.claude.json` | `/home/node/.claude.json` | MCP server config; auto-created if missing |
+| `~/.claude-docker/claude-docker.yaml` | `/home/node/claude-docker.yaml` | Config file with MCP servers, streamLogging; auto-created if missing |
 | `$WORK_DIR` | `/workspace` | Working directory |
 | `~/.claude/.credentials.json` | `/home/node/.claude/.credentials.json` | Read-only; only if using credentials file auth |
 
