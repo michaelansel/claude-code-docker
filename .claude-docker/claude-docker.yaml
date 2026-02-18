@@ -1,1 +1,0 @@
-{"streamLogging": {"enabled": true, "directory": "~/.claude-docker/session-logs", "retentionDays": 30, "maxFileSizeMB": 10}}

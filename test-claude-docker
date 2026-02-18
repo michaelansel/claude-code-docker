@@ -317,6 +317,23 @@ assert_contains "CLAUDE.md has git guidance" "Git is not configured" "$(cat "$TE
 assert_contains "CLAUDE.md has no-commit guidance" "do NOT commit" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
 teardown
 
+echo "=== .claude.json is auto-created when missing ==="
+setup
+# Remove any pre-existing .claude.json
+rm -f "$TEST_DIR/.claude-docker/.claude.json"
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
+assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/.claude.json" && echo true || echo false)"
+assert_eq ".claude.json contains empty object" "{}" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
+assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+teardown
+
+echo "=== .claude.json is always mounted ==="
+setup
+echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/.claude.json"
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
+assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
+teardown
+
 echo "=== claude-docker.yaml is auto-created when missing ==="
 setup
 # Remove any pre-existing claude-docker.yaml
@@ -366,6 +383,7 @@ STUB
 out=$(echo "" | bash "$UNDER_TEST" shell 2>&1)
 assert_contains "uses --entrypoint bash" "--entrypoint bash" "$out"
 assert_contains "uses -it" "-it" "$out"
+assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
 assert_contains "mounts claude-docker.yaml" "claude-docker.yaml:/home/node/claude-docker.yaml" "$out"
 teardown
 

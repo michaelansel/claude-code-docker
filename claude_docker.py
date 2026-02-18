@@ -22,7 +22,8 @@ IMAGE_NAME = "claude-code"
 CONFIG_DIR = Path.home() / ".claude-docker"
 CREDENTIALS = Path.home() / ".claude" / ".credentials.json"
 TOKEN_FILE = CONFIG_DIR / ".oauth-token"
-USER_CONFIG = CONFIG_DIR / "claude-docker.yaml"
+USER_CONFIG = CONFIG_DIR / ".claude.json"
+DOCKER_YAML_CONFIG = CONFIG_DIR / "claude-docker.yaml"
 AGENTS_FILE = CONFIG_DIR / "agents.yaml"
 
 
@@ -271,7 +272,8 @@ def build_docker_args(
     if CREDENTIALS.exists():
         mounts.extend(["-v", f"{CREDENTIALS}:/home/node/.claude/.credentials.json:ro"])
 
-    mounts.extend(["-v", f"{USER_CONFIG}:/home/node/claude-docker.yaml"])
+    mounts.extend(["-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml"])
+    mounts.extend(["-v", f"{USER_CONFIG}:/home/node/.claude.json"])
 
     env_args = ["-e", f"CLAUDE_PROJECT_NAME={project_name}"]
     if agent_mode:
@@ -318,8 +320,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     """Handle setup subcommand."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Initialize USER_CONFIG with default logging settings if it doesn't exist
-    if not USER_CONFIG.exists():
+    # Initialize DOCKER_YAML_CONFIG with default logging settings if it doesn't exist
+    if not DOCKER_YAML_CONFIG.exists():
         default_config = {
             "streamLogging": {
                 "enabled": True,
@@ -328,8 +330,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 "maxFileSizeMB": 10
             }
         }
-        USER_CONFIG.write_text(json.dumps(default_config, indent=2) + "\n")
-        USER_CONFIG.chmod(0o600)
+        DOCKER_YAML_CONFIG.write_text(json.dumps(default_config, indent=2) + "\n")
+        DOCKER_YAML_CONFIG.chmod(0o600)
 
     if args.token:
         token = args.token
@@ -371,9 +373,9 @@ def cmd_clean_logs(args: argparse.Namespace) -> int:
 
     # Read configuration for retention settings
     try:
-        if USER_CONFIG.exists():
+        if DOCKER_YAML_CONFIG.exists():
             import yaml
-            with open(USER_CONFIG) as f:
+            with open(DOCKER_YAML_CONFIG) as f:
                 config = yaml.safe_load(f) or {}
                 stream_log_config = config.get("streamLogging", {})
                 retention_days = stream_log_config.get("retentionDays", 30)
@@ -475,7 +477,8 @@ p.write_text(json.dumps(d, indent=2) + '\\n')
         runtime, "run", "--rm", "-it",
         "--entrypoint", "bash",
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
-        "-v", f"{USER_CONFIG}:/home/node/claude-docker.yaml",
+        "-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml",
+        "-v", f"{USER_CONFIG}:/home/node/.claude.json",
         IMAGE_NAME,
         "-c", setup_script + cred_script
     ], check=True)
@@ -503,7 +506,8 @@ def cmd_shell(args: argparse.Namespace) -> int:
     shell_mounts = [
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
         "-v", f"{os.getcwd()}:/workspace",
-        "-v", f"{USER_CONFIG}:/home/node/claude-docker.yaml",
+        "-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml",
+        "-v", f"{USER_CONFIG}:/home/node/.claude.json",
     ]
 
     if CREDENTIALS.exists():

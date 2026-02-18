@@ -193,13 +193,13 @@ def cleanup_on_exit(signum=None, frame=None):
 signal.signal(signal.SIGINT, cleanup_on_exit)
 signal.signal(signal.SIGTERM, cleanup_on_exit)
 
-# Read configuration from USER_CONFIG
+# Read configuration from DOCKER_YAML_CONFIG
 try:
-    USER_CONFIG_PATH = Path.home() / ".claude-docker" / "claude-docker.yaml"
-    if USER_CONFIG_PATH.exists():
+    DOCKER_YAML_CONFIG_PATH = Path.home() / ".claude-docker" / "claude-docker.yaml"
+    if DOCKER_YAML_CONFIG_PATH.exists():
         try:
             import yaml
-            with open(USER_CONFIG_PATH) as f:
+            with open(DOCKER_YAML_CONFIG_PATH) as f:
                 config = yaml.safe_load(f) or {}
                 stream_log_config = config.get("streamLogging", {})
                 _log_enabled = stream_log_config.get("enabled", True)
