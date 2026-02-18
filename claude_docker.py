@@ -152,6 +152,7 @@ class AgentConfig:
     model: Optional[str] = None
     env: Dict[str, str] = field(default_factory=dict)
     init: List[str] = field(default_factory=list)
+    prompt: Optional[str] = None
 
 
 def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
@@ -177,7 +178,8 @@ def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
             workspace=workspace,
             model=raw.get("model"),
             env=raw.get("env", {}) or {},
-            init=raw.get("init", []) or []
+            init=raw.get("init", []) or [],
+            prompt=raw.get("prompt")
         )
     return None
 
@@ -279,7 +281,8 @@ def build_docker_args(
     agent_env: Dict[str, str],
     agent_init: List[str],
     stream: bool,
-    stream_raw: bool
+    stream_raw: bool,
+    agent_prompt: Optional[str] = None
 ) -> tuple:
     """Build the docker/finch run arguments."""
     runtime = claude_docker.runtime
@@ -315,7 +318,7 @@ def build_docker_args(
         env_args.extend(["-e", f"AGENT_INIT={init_b64}"])
 
     if agent_mode:
-        prompt = "/c3po auto"
+        prompt = agent_prompt or "/c3po auto"
 
     claude_args = ["-p", prompt]
     if stream or stream_raw:
@@ -638,6 +641,9 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
         else:
             i += 1
 
+    # Determine prompt: CLI flag > config > default (None = /c3po auto)
+    agent_prompt = getattr(args, 'prompt', None) or config.prompt
+
     docker_args, stream = build_docker_args(
         prompt="",
         work_dir=config.workspace,
@@ -647,7 +653,8 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
         agent_env=config.env,
         agent_init=config.init,
         stream=agent_stream,
-        stream_raw=agent_stream_raw
+        stream_raw=agent_stream_raw,
+        agent_prompt=agent_prompt
     )
     return run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
 
@@ -892,6 +899,7 @@ Examples:
     agent_subparsers.add_parser("list", help="List available agents")
     agent_run_parser = agent_subparsers.add_parser("run", help="Run named agent")
     agent_run_parser.add_argument("agent_name", help="Agent name")
+    agent_run_parser.add_argument("--prompt", help="Custom prompt to override default /c3po auto")
 
     args = parser.parse_args()
 

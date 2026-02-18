@@ -223,6 +223,39 @@ out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
 assert_contains "env has CLAUDE_PROJECT_NAME=notes" "CLAUDE_PROJECT_NAME=notes" "$out"
 teardown
 
+echo "=== agent run --prompt overrides default prompt ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+out=$(bash "$UNDER_TEST" --no-stream agent run notes --prompt "custom prompt" 2>&1)
+assert_contains "uses custom prompt" "custom prompt" "$out"
+teardown
+
+echo "=== agent config prompt is used when no flag provided ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+# Create a custom agents config with a prompt for the notes agent
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+notes:
+  workspace: ~/Documents/Notes
+  prompt: "config prompt"
+YAML
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
+assert_contains "uses config prompt" "config prompt" "$out"
+teardown
+
+echo "=== agent run --prompt takes precedence over config ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+# Create a custom agents config with a prompt for the notes agent
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+notes:
+  workspace: ~/Documents/Notes
+  prompt: "config prompt"
+YAML
+out=$(bash "$UNDER_TEST" --no-stream agent run notes --prompt "cli prompt" 2>&1)
+assert_contains "uses cli prompt" "cli prompt" "$out"
+teardown
+
 echo "=== direct mode sets CLAUDE_PROJECT_NAME to dir basename ==="
 setup
 out=$(bash "$UNDER_TEST" -d /tmp -p "hello" 2>&1)
