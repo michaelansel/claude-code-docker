@@ -566,6 +566,19 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
     agent_name = args.agent_name
 
     agents = load_agents()
+
+    # Check if agent exists
+    if agent_name not in agents:
+        print(f"usage: claude-docker agent [-h] [-s] [-sj] [--no-stream] [-b] [--log-stream]", file=sys.stderr)
+        print(f"                           [--no-log-stream] [--log-dir LOG_DIR]", file=sys.stderr)
+        print(f"                           {{list,run}} ...", file=sys.stderr)
+        print(f"claude-docker agent: error: argument agent_cmd: invalid choice: '{agent_name}' (choose from 'run')", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Available agents:", file=sys.stderr)
+        for name in agents.keys():
+            print(f"  {name}", file=sys.stderr)
+        return 2
+
     config = get_agent_config(agent_name, agents)
     if config is None:
         # Agent exists but has no workspace configured

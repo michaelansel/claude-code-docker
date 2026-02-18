@@ -121,7 +121,7 @@ teardown
 echo "=== agent unknown ==="
 setup
 rc=0
-out=$(bash "$UNDER_TEST" agent nonexistent 2>&1) || rc=$?
+out=$(bash "$UNDER_TEST" agent run nonexistent 2>&1) || rc=$?
 # Python implementation returns exit code 2 for invalid agent command
 assert_exit "exits non-zero" 2 "$rc"
 assert_contains "error message" "invalid choice" "$out"
@@ -154,7 +154,7 @@ teardown
 echo "=== help flag ==="
 setup
 out=$(bash "$UNDER_TEST" -h 2>&1)
-assert_contains "shows agent usage" "agent <name>" "$out"
+assert_contains "shows agent usage" "agent run" "$out"
 assert_contains "shows --no-stream" "--no-stream" "$out"
 # Check for Usage: (uppercase U) at the start of help output
 assert_contains "shows Usage:" "Usage:" "$out"
@@ -175,21 +175,21 @@ teardown
 echo "=== agent mode sets /c3po auto ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" agent notes 2>&1)
+out=$(bash "$UNDER_TEST" agent run notes 2>&1)
 assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
 teardown
 
 echo "=== agent mode streams by default ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" agent notes 2>&1)
+out=$(bash "$UNDER_TEST" agent run notes 2>&1)
 assert_contains "uses stream-json" "stream-json" "$out"
 teardown
 
 echo "=== agent mode --no-stream disables streaming ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
 assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
 # Should NOT have stream-json since --no-stream was passed
 if [[ "$out" != *"stream-json"* ]]; then
@@ -204,7 +204,7 @@ teardown
 echo "=== flags before agent subcommand ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" -sj agent notes 2>&1)
+out=$(bash "$UNDER_TEST" -sj agent run notes 2>&1)
 assert_contains "uses stream-json" "stream-json" "$out"
 assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
 teardown
@@ -212,14 +212,14 @@ teardown
 echo "=== container gets a --name ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
 assert_contains "has --name flag" "--name claude-code-" "$out"
 teardown
 
 echo "=== agent mode sets CLAUDE_PROJECT_NAME to agent name ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
 assert_contains "env has CLAUDE_PROJECT_NAME=notes" "CLAUDE_PROJECT_NAME=notes" "$out"
 teardown
 
@@ -703,7 +703,7 @@ broken:
   model: opus
 YAML
 rc=0
-out=$(bash "$UNDER_TEST" agent broken 2>&1) || rc=$?
+out=$(bash "$UNDER_TEST" agent run broken 2>&1) || rc=$?
 assert_exit "exits non-zero" 1 "$rc"
 assert_contains "error about workspace" "no workspace" "$out"
 teardown
@@ -732,7 +732,7 @@ teardown
 echo "=== simple format has no --model flag ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
 assert_not_contains "no model flag for simple agent" "--model" "$out"
 teardown
 
@@ -746,13 +746,13 @@ middle:
 last: ~/Last
 YAML
 mkdir -p "$TEST_DIR/First" "$TEST_DIR/Middle" "$TEST_DIR/Last"
-out_first=$(bash "$UNDER_TEST" --no-stream agent first 2>&1)
+out_first=$(bash "$UNDER_TEST" --no-stream agent run first 2>&1)
 assert_contains "first agent resolves" "/First" "$out_first"
 assert_not_contains "first has no model" "--model" "$out_first"
-out_middle=$(bash "$UNDER_TEST" --no-stream agent middle 2>&1)
+out_middle=$(bash "$UNDER_TEST" --no-stream agent run middle 2>&1)
 assert_contains "middle agent resolves" "/Middle" "$out_middle"
 assert_contains "middle has model" "--model sonnet" "$out_middle"
-out_last=$(bash "$UNDER_TEST" --no-stream agent last 2>&1)
+out_last=$(bash "$UNDER_TEST" --no-stream agent run last 2>&1)
 assert_contains "last agent resolves" "/Last" "$out_last"
 assert_not_contains "last has no model" "--model" "$out_last"
 teardown
@@ -760,7 +760,7 @@ teardown
 echo "=== agent mode passes CLAUDE_AGENT_MODE=1 ==="
 setup
 mkdir -p "$TEST_DIR/Documents/Notes"
-out=$(bash "$UNDER_TEST" agent --no-stream notes 2>&1)
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
 assert_contains "env has CLAUDE_AGENT_MODE=1" "CLAUDE_AGENT_MODE=1" "$out"
 teardown
 
