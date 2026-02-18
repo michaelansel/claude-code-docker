@@ -296,7 +296,7 @@ fi
 STUB
 )"
 # Run claude-docker in background so we can send signal to it directly
-timeout 3 bash "$UNDER_TEST" agent --no-stream notes > /dev/null 2>&1 || true
+timeout 3 bash "$UNDER_TEST" --no-stream agent run notes > /dev/null 2>&1 || true
 sleep 0.5
 if [[ -f "$TEST_DIR/rt-stop.log" ]]; then
     stop_log=$(cat "$TEST_DIR/rt-stop.log")
@@ -678,7 +678,7 @@ coder:
   model: opus
 YAML
 mkdir -p "$TEST_DIR/Code/project"
-out=$(bash "$UNDER_TEST" agent --no-stream coder 2>&1)
+out=$(bash "$UNDER_TEST" --no-stream agent run coder 2>&1)
 assert_contains "workspace resolves" "/Code/project" "$out"
 assert_contains "model flag passed" "--model opus" "$out"
 assert_contains "prompt is /c3po auto" "/c3po auto" "$out"
@@ -691,7 +691,7 @@ builder:
   workspace: ~/Build
 YAML
 mkdir -p "$TEST_DIR/Build"
-out=$(bash "$UNDER_TEST" agent --no-stream builder 2>&1)
+out=$(bash "$UNDER_TEST" --no-stream agent run builder 2>&1)
 assert_contains "workspace resolves" "/Build" "$out"
 assert_not_contains "no model flag" "--model" "$out"
 teardown
