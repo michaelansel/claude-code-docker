@@ -389,6 +389,14 @@ def cmd_clean_logs(args: argparse.Namespace) -> int:
     """Handle clean-logs subcommand."""
     import shutil
 
+    # Show usage if running without arguments
+    if not args.older_than:
+        print("Usage: claude-docker clean-logs [--older-than DAYS]", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Options:", file=sys.stderr)
+        print("  --older-than DAYS    Delete logs older than N days (e.g., 7d, 30d)", file=sys.stderr)
+        print("", file=sys.stderr)
+
     # Read configuration for retention settings
     try:
         if DOCKER_YAML_CONFIG.exists():
