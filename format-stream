@@ -3,8 +3,10 @@
 import sys
 import json
 import os
+import re
 import signal
 import threading
+import queue
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -58,35 +60,23 @@ def setup_log_file(log_dir: Path) -> Optional[object]:
         sys.stderr.write(f"Error setting up log file: {e}\n", file=sys.stderr)
         return None
 
-def read_stdin_and_log(log_file: object):
-    """Thread function: Read stdin and write to log file.
+_log_queue: queue.Queue = queue.Queue(maxsize=1000)
 
-    Args:
-        log_file: File handle to write to
-    """
-    global _log_file_handle
-    try:
-        for line in sys.stdin:
+def log_worker(log_file: object, q: queue.Queue):
+    """Thread function: Read from queue and write to log file."""
+    while True:
+        line = q.get()
+        if line is None:  # sentinel
+            break
+        try:
             log_file.write(line)
             log_file.flush()
-    except Exception:
-        pass
-    finally:
-        _log_file_handle = None
+        except Exception:
+            pass
+        q.task_done()
 
-def format_line(line):
-    line = line.strip()
-    if not line:
-        return None
-
-    try:
-        data = json.loads(line)
-    except json.JSONDecodeError:
-        return line
-
-    if not isinstance(data, dict):
-        return None
-
+def format_event(data: dict) -> Optional[str]:
+    """Process a parsed JSON event dict into display output."""
     t = data.get("type")
     sub = data.get("subtype", "")
 
@@ -208,6 +198,35 @@ def format_line(line):
 
     return None
 
+def format_line(line: str) -> Optional[str]:
+    line = line.strip()
+    if not line:
+        return None
+
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        if line.startswith('{'):
+            # Possibly truncated+concatenated — scan for embedded valid objects
+            results = []
+            for m in re.finditer(r'\{"type":', line):
+                if m.start() == 0:
+                    continue  # skip the known-invalid first object
+                try:
+                    obj, _ = json.JSONDecoder().raw_decode(line, m.start())
+                    out = format_event(obj)
+                    if out:
+                        results.append(out)
+                except json.JSONDecodeError:
+                    pass
+            return '\n'.join(results) if results else None
+        # Non-JSON: show short messages (Docker errors etc), suppress long fragments
+        return line if len(line) < 200 else None
+
+    if not isinstance(data, dict):
+        return None
+    return format_event(data)
+
 def cleanup_on_exit(signum=None, frame=None):
     """Cleanup: Close log file handle on exit."""
     global _log_file_handle
@@ -250,15 +269,13 @@ except Exception:
 # Setup log file if enabled
 _log_file_handle = setup_log_file(_log_dir)
 
-# Thread-based stdin multiplexing
+# Main loop: read stdin, queue for logging, format for display
 if _log_file_handle is not None:
-    # Create logging thread
-    log_thread = threading.Thread(target=read_stdin_and_log, args=(_log_file_handle,), daemon=True)
+    log_thread = threading.Thread(target=log_worker, args=(_log_file_handle, _log_queue), daemon=True)
     log_thread.start()
-
-    # Main thread: format and output to stdout
     try:
         for line in sys.stdin:
+            _log_queue.put(line)
             try:
                 out = format_line(line)
                 if out is not None:
@@ -266,12 +283,10 @@ if _log_file_handle is not None:
             except Exception:
                 pass
     finally:
-        # Ensure log thread finishes
-        if log_thread.is_alive():
-            log_thread.join(timeout=1)
+        _log_queue.put(None)  # sentinel to stop log thread
+        log_thread.join(timeout=2)
         cleanup_on_exit()
 else:
-    # No logging, use original behavior
     for line in sys.stdin:
         try:
             out = format_line(line)
