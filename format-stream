@@ -150,7 +150,12 @@ def format_line(line):
         if isinstance(result, str):
             content = result
         else:
-            content = result.get("content", "")
+            if "stdout" in result or "stderr" in result:
+                content = (result.get("stdout") or result.get("stderr") or "").strip()
+                if result.get("noOutputExpected") and not content:
+                    return None
+            else:
+                content = result.get("content", "")
         if isinstance(content, list):
             # content can be a list of blocks like [{"type": "text", "text": "..."}]
             content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
@@ -160,6 +165,31 @@ def format_line(line):
             content = content[:200] + "..."
         if content:
             return f"{GREEN}  ↳ {content}{RESET}"
+
+    if t == "user" and not data.get("tool_use_result"):
+        msg_content = data.get("message", {}).get("content", [])
+        if isinstance(msg_content, list):
+            for block in msg_content:
+                if isinstance(block, dict):
+                    if block.get("type") == "tool_result":
+                        raw = block.get("content", "")
+                        if isinstance(raw, list):
+                            raw = " ".join(b.get("text", "") for b in raw if isinstance(b, dict))
+                        if not isinstance(raw, str):
+                            raw = str(raw)
+                        if len(raw) > 200:
+                            raw = raw[:200] + "..."
+                        if raw and not block.get("is_error"):
+                            return f"{GREEN}  ↳ {raw}{RESET}"
+                    elif block.get("type") == "text" and block.get("text"):
+                        text = block["text"].strip()
+                        if len(text) > 200:
+                            text = text[:200] + "..."
+                        return f"{DIM}[user] {text}{RESET}"
+
+    if t == "system" and sub == "hook_started":
+        name = data.get("hook_name", "")
+        return f"{DIM}[{name}] starting...{RESET}"
 
     if t == "result":
         result = data.get("result", "")
