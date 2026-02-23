@@ -429,8 +429,8 @@ def _run_trigger_loop(
         print(f"Error: trigger loop for '{config.name}' is already running (lock: {lock_path})", file=sys.stderr)
         return 1
 
-    # PID-scoped so concurrent invocations never share a handoff file.
-    handoff_path = agents_dir / f"{config.name}-trigger-handoff-{os.getpid()}"
+    # PID-scoped so concurrent invocations never share an agent ID file.
+    agent_id_path = agents_dir / f"{config.name}-agent-id-{os.getpid()}"
 
     agent_id: Optional[str] = None
     first_run = True
@@ -439,7 +439,7 @@ def _run_trigger_loop(
 
     def _cleanup():
         try:
-            handoff_path.unlink(missing_ok=True)
+            agent_id_path.unlink(missing_ok=True)
         except Exception:
             pass
         try:
@@ -462,13 +462,14 @@ def _run_trigger_loop(
             _wait_for_any_trigger(config, agent_id)
         first_run = False
 
-        # Clear handoff file before each run
-        handoff_path.write_text("")
+        # Clear agent ID file before each run
+        agent_id_path.write_text("")
 
-        # Add trigger handoff env and volume
+        # Pass agent ID file path to c3po plugin and mount it
         loop_env = dict(merged_env)
-        loop_env["CLAUDE_DOCKER_TRIGGER_HANDOFF"] = "/tmp/claude-docker-trigger-handoff"
-        extra_volumes = [f"{handoff_path}:/tmp/claude-docker-trigger-handoff"]
+        loop_env["C3PO_AGENT_ID_FILE"] = "/tmp/claude-docker-agent-id"
+        loop_env["C3PO_KEEP_REGISTERED"] = "1"
+        extra_volumes = [f"{agent_id_path}:/tmp/claude-docker-agent-id"]
 
         docker_args, stream = build_docker_args(
             prompt="",
@@ -486,9 +487,9 @@ def _run_trigger_loop(
 
         run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
 
-        # Read agent_id from handoff file
+        # Read agent_id from agent ID file
         try:
-            new_id = handoff_path.read_text().strip()
+            new_id = agent_id_path.read_text().strip()
             if new_id:
                 agent_id = new_id
         except Exception:

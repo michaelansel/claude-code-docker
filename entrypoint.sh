@@ -84,9 +84,4 @@ fi
 echo "Launching claude..." >&2
 claude --dangerously-skip-permissions "$@"
 _claude_exit=$?
-if [[ -n "${CLAUDE_DOCKER_TRIGGER_HANDOFF:-}" ]]; then
-    _runtime_dir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-    _id_file=$(ls -t "$_runtime_dir"/c3po-agent-id-* /tmp/c3po-agent-id-* 2>/dev/null | head -1) || true
-    [[ -n "$_id_file" ]] && cat "$_id_file" > "$CLAUDE_DOCKER_TRIGGER_HANDOFF" 2>/dev/null || true
-fi
 exit $_claude_exit
