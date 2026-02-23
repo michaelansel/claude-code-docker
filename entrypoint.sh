@@ -82,4 +82,10 @@ if [[ "${CLAUDE_AGENT_MODE:-}" == "1" ]]; then
 fi
 
 echo "Launching claude..." >&2
-exec claude --dangerously-skip-permissions "$@"
+claude --dangerously-skip-permissions "$@"
+_claude_exit=$?
+if [[ -n "${CLAUDE_DOCKER_TRIGGER_HANDOFF:-}" ]]; then
+    _id_file=$(ls -t /tmp/c3po-agent-id-* 2>/dev/null | head -1) || true
+    [[ -n "$_id_file" ]] && cat "$_id_file" > "$CLAUDE_DOCKER_TRIGGER_HANDOFF" 2>/dev/null || true
+fi
+exit $_claude_exit

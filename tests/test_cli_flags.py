@@ -122,3 +122,11 @@ def test_build_flag():
         sys.argv = ["claude-docker", "-b", "-p", "hello"]
         main()
     assert exc_info.value.code == 0
+
+
+def test_agent_run_once_flag():
+    """Test --once flag is recognized by agent run."""
+    with pytest.raises(SystemExit) as exc_info:
+        sys.argv = ["claude-docker", "agent", "run", "notes", "--once"]
+        main()
+    assert exc_info.value.code == 0

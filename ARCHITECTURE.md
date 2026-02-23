@@ -130,6 +130,60 @@ This avoids unnecessary rebuilds when only non-image files change (tests, docs, 
 | `~/.claude-docker/agents.yaml` | Agent registry (YAML) |
 | `~/.claude-docker/plugins/` | Installed Claude Code plugins |
 
+## Trigger Loop
+
+When an agent has `triggers` configured in `agents.yaml`, `claude-docker agent run <name>` enters a host-side loop instead of running the container once. This eliminates idle token consumption — the container exits after doing work, and claude-docker restarts it only when a trigger fires.
+
+**Limitation**: Each container run starts with no session memory. Suitable for task-processor agents where each trigger is independent. Not suitable for conversational agents needing multi-turn context. Agents should document work to files/git before exiting.
+
+### Loop behavior
+
+```
+claude-docker agent run <name>     (triggers set → enters host loop)
+  │
+  ├── [first run] start container immediately
+  │     prompt: one-shot (process work, exit)
+  │     entrypoint.sh post-exit: write agent ID to handoff file
+  │
+  ├── read agent ID from handoff file
+  │
+  ├── run post_run commands (workspace cwd, fail-open)
+  │
+  ├── [loop] run all triggers in parallel threads
+  │     first to fire → cancel others → start container
+  │
+  └── repeat; SIGINT/SIGTERM → kill trigger threads, unregister agent_id, exit
+```
+
+Use `--once` to skip the loop for debugging: `claude-docker agent run <name> --once`
+
+### Agent ID handoff
+
+The c3po plugin writes the agent ID to `/tmp/c3po-agent-id-{session_id}` inside the container. On exit, `entrypoint.sh` globs this file and copies the contents to the handoff file (mounted from host).
+
+| Location | Path |
+|----------|------|
+| Host | `~/.claude-docker/agents/{name}-trigger-handoff` |
+| Container | `/tmp/claude-docker-trigger-handoff` (via volume mount) |
+| Env var | `CLAUDE_DOCKER_TRIGGER_HANDOFF=/tmp/claude-docker-trigger-handoff` |
+
+### Trigger types
+
+| Type | Behavior |
+|------|----------|
+| `c3po` | Long-polls C-3PO inbox (`/agent/api/wait`, fallback `/agent/api/pending`); fires when message count > 0 |
+| `script` | Runs `command` as subprocess (cwd=workspace); fires on exit 0; nonzero retries with exponential backoff (5s→60s) |
+
+All triggers run in parallel; the first to fire cancels the others and starts the container.
+
+### post_run
+
+Shell commands listed under `post_run` run after each container exit (before the next trigger wait). Failures are logged but the loop continues (fail-open).
+
+### Implicit /c3po auto deprecation
+
+When no `prompt` is configured and no `triggers` are set, `agent run` defaults to `/c3po auto` (Claude owns the restart loop internally). This is preserved for backward compatibility but deprecated — a warning is emitted. Prefer setting `prompt` explicitly in `agents.yaml`.
+
 ## setup-c3po Flow
 
 1. Ensures `~/.claude-docker/.claude.json` exists

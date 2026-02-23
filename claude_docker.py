@@ -11,6 +11,10 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -125,6 +129,10 @@ def needs_rebuild(runtime: str) -> bool:
 def load_agents(yaml_content: str = None) -> Optional[Dict]:
     """Load and parse agents.yaml with PyYAML.
 
+    When loading from file, migrates any agent without a prompt (and without triggers)
+    by injecting 'prompt: /c3po auto', then writes the file back. This ensures every
+    agent always has an explicit prompt after first load.
+
     Args:
         yaml_content: Optional YAML string to parse. If not provided, reads from AGENTS_FILE.
     """
@@ -141,7 +149,30 @@ def load_agents(yaml_content: str = None) -> Optional[Dict]:
     if not AGENTS_FILE.exists():
         return None
     with open(AGENTS_FILE) as f:
-        return yaml.safe_load(f)
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        return data
+
+    # Migrate: inject 'prompt: /c3po auto' for agents with no prompt and no triggers
+    migrated = []
+    for name, cfg in data.items():
+        if isinstance(cfg, str):
+            data[name] = {"workspace": cfg, "prompt": "/c3po auto"}
+            migrated.append(name)
+        elif isinstance(cfg, dict) and not cfg.get("prompt") and not cfg.get("triggers"):
+            cfg["prompt"] = "/c3po auto"
+            migrated.append(name)
+
+    if migrated:
+        with open(AGENTS_FILE, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+        print(
+            f"Migrated agents.yaml: added 'prompt: /c3po auto' to: {', '.join(migrated)}",
+            file=sys.stderr,
+        )
+
+    return data
 
 
 @dataclass(frozen=True)
@@ -153,6 +184,8 @@ class AgentConfig:
     env: Dict[str, str] = field(default_factory=dict)
     init: List[str] = field(default_factory=list)
     prompt: Optional[str] = None
+    triggers: List[dict] = field(default_factory=list)
+    post_run: List[str] = field(default_factory=list)
 
 
 def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
@@ -179,7 +212,9 @@ def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
             model=raw.get("model"),
             env=raw.get("env", {}) or {},
             init=raw.get("init", []) or [],
-            prompt=raw.get("prompt")
+            prompt=raw.get("prompt"),
+            triggers=raw.get("triggers", []) or [],
+            post_run=raw.get("post_run", []) or [],
         )
     return None
 
@@ -221,6 +256,252 @@ def decode_init_commands(encoded: str) -> List[str]:
     """Decode base64-encoded JSON back to command list."""
     json_str = base64.b64decode(encoded).decode()
     return json.loads(json_str)
+
+
+def _load_c3po_creds():
+    """Load C-3PO credentials from config files. Returns (url, headers) or (None, None)."""
+    for creds_path in [
+        CONFIG_DIR / "c3po-credentials.json",
+        Path.home() / ".claude" / "c3po-credentials.json",
+    ]:
+        if creds_path.exists():
+            try:
+                creds = json.loads(creds_path.read_text())
+                url = creds.get("coordinator_url", "")
+                token = creds.get("api_token", "")
+                if url and token:
+                    return url, {"Authorization": f"Bearer {token}"}
+            except Exception:
+                pass
+    return None, None
+
+
+def _c3po_unregister(agent_id: str, url: str, headers: dict) -> None:
+    """Best-effort POST to unregister agent from C-3PO coordinator."""
+    if not agent_id or not url:
+        return
+    try:
+        data = json.dumps({"agent_id": agent_id}).encode()
+        req = urllib.request.Request(
+            f"{url}/agent/api/unregister",
+            data=data,
+            headers={**headers, "Content-Type": "application/json", "X-Machine-Name": agent_id},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
+def _c3po_wait_thread(agent_id: str, url: str, headers: dict,
+                      done_event: threading.Event, stop_event: threading.Event) -> None:
+    """Thread function: long-poll C-3PO inbox until a message is pending."""
+    # Agent ID goes in X-Machine-Name header (full machine/project string)
+    poll_headers = {**headers, "X-Machine-Name": agent_id}
+
+    while not stop_event.is_set():
+        try:
+            req = urllib.request.Request(
+                f"{url}/agent/api/wait?timeout=300",
+                headers=poll_headers,
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=310) as resp:
+                    data = json.loads(resp.read())
+                    status = data.get("status")
+                    if status == "received":
+                        done_event.set()
+                        return
+                    elif status == "retry":
+                        # Coordinator restarting; Retry-After is typically 15s
+                        if stop_event.is_set():
+                            return
+                        time.sleep(15)
+                    # status == "timeout": no messages, loop again
+            except urllib.error.HTTPError:
+                if stop_event.is_set():
+                    return
+                time.sleep(5)
+            except (urllib.error.URLError, OSError):
+                if stop_event.is_set():
+                    return
+                time.sleep(5)
+        except Exception:
+            if stop_event.is_set():
+                return
+            time.sleep(5)
+
+
+def _script_trigger_thread(cmd: str, workspace: str,
+                            done_event: threading.Event, stop_event: threading.Event) -> None:
+    """Thread function: run script until exit 0, then set done_event."""
+    backoff = 5
+    while not stop_event.is_set():
+        try:
+            result = subprocess.run(
+                cmd, shell=True, cwd=workspace,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+            if result.returncode == 0:
+                done_event.set()
+                return
+            if stop_event.is_set():
+                return
+            stderr_msg = result.stderr.decode(errors="replace").strip()
+            if stderr_msg:
+                print(f"Script trigger '{cmd}' exited {result.returncode}: {stderr_msg}", file=sys.stderr)
+            else:
+                print(f"Script trigger '{cmd}' exited {result.returncode}, retrying in {backoff}s", file=sys.stderr)
+            for _ in range(backoff):
+                if stop_event.is_set():
+                    return
+                time.sleep(1)
+            backoff = min(backoff * 2, 60)
+        except Exception as e:
+            if stop_event.is_set():
+                return
+            print(f"Script trigger error '{cmd}': {e}", file=sys.stderr)
+            time.sleep(5)
+
+
+def _wait_for_any_trigger(config: "AgentConfig", agent_id: Optional[str]) -> None:
+    """Block until any configured trigger fires."""
+    done_event = threading.Event()
+    stop_event = threading.Event()
+    threads = []
+
+    url, headers = _load_c3po_creds()
+
+    for trigger in config.triggers:
+        t_type = trigger.get("type")
+        if t_type == "c3po":
+            if not agent_id:
+                print("Warning: c3po trigger configured but no agent_id from previous run; skipping", file=sys.stderr)
+                continue
+            if not url:
+                print("Warning: c3po trigger configured but no credentials found; skipping", file=sys.stderr)
+                continue
+            t = threading.Thread(
+                target=_c3po_wait_thread,
+                args=(agent_id, url, headers, done_event, stop_event),
+                daemon=True,
+            )
+            threads.append(t)
+            t.start()
+        elif t_type == "script":
+            cmd = trigger.get("command", "")
+            if not cmd:
+                print("Warning: script trigger has no 'command' field; skipping", file=sys.stderr)
+                continue
+            t = threading.Thread(
+                target=_script_trigger_thread,
+                args=(cmd, config.workspace, done_event, stop_event),
+                daemon=True,
+            )
+            threads.append(t)
+            t.start()
+
+    if not threads:
+        print("Warning: no valid triggers could be started; sleeping 60s before next run", file=sys.stderr)
+        time.sleep(60)
+        return
+
+    print("Waiting for trigger...", file=sys.stderr)
+    done_event.wait()
+    stop_event.set()
+
+
+def _run_trigger_loop(
+    config: "AgentConfig",
+    agent_stream: bool,
+    agent_stream_raw: bool,
+    merged_env: Dict[str, str],
+) -> int:
+    """Run the host-side trigger loop: container → post_run → wait → repeat."""
+    agents_dir = CONFIG_DIR / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    # Lockfile prevents double-launching the same agent.
+    lock_path = agents_dir / f"{config.name}.lock"
+    try:
+        lock_path.open("x").close()  # exclusive create — fails if already exists
+    except FileExistsError:
+        print(f"Error: trigger loop for '{config.name}' is already running (lock: {lock_path})", file=sys.stderr)
+        return 1
+
+    # PID-scoped so concurrent invocations never share a handoff file.
+    handoff_path = agents_dir / f"{config.name}-trigger-handoff-{os.getpid()}"
+
+    agent_id: Optional[str] = None
+    first_run = True
+
+    url, headers = _load_c3po_creds()
+
+    def _cleanup():
+        try:
+            handoff_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def shutdown_handler(signum, frame):
+        print("\nShutting down trigger loop...", file=sys.stderr)
+        if agent_id:
+            _c3po_unregister(agent_id, url, headers)
+        _cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
+    while True:
+        if not first_run:
+            _wait_for_any_trigger(config, agent_id)
+        first_run = False
+
+        # Clear handoff file before each run
+        handoff_path.write_text("")
+
+        # Add trigger handoff env and volume
+        loop_env = dict(merged_env)
+        loop_env["CLAUDE_DOCKER_TRIGGER_HANDOFF"] = "/tmp/claude-docker-trigger-handoff"
+        extra_volumes = [f"{handoff_path}:/tmp/claude-docker-trigger-handoff"]
+
+        docker_args, stream = build_docker_args(
+            prompt="",
+            work_dir=config.workspace,
+            project_name=config.name,
+            agent_mode=True,
+            agent_model=config.model,
+            agent_env=loop_env,
+            agent_init=config.init,
+            stream=agent_stream,
+            stream_raw=agent_stream_raw,
+            agent_prompt=config.prompt,
+            extra_volumes=extra_volumes,
+        )
+
+        run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
+
+        # Read agent_id from handoff file
+        try:
+            new_id = handoff_path.read_text().strip()
+            if new_id:
+                agent_id = new_id
+        except Exception:
+            pass
+
+        # Run post_run commands (fail-open)
+        for cmd in config.post_run:
+            try:
+                result = subprocess.run(cmd, shell=True, cwd=config.workspace)
+                if result.returncode != 0:
+                    print(f"post_run '{cmd}' exited {result.returncode}", file=sys.stderr)
+            except Exception as e:
+                print(f"post_run error '{cmd}': {e}", file=sys.stderr)
 
 
 def run_container(args: List[str], stream: bool = True, stream_raw: bool = False) -> int:
@@ -282,7 +563,8 @@ def build_docker_args(
     agent_init: List[str],
     stream: bool,
     stream_raw: bool,
-    agent_prompt: Optional[str] = None
+    agent_prompt: Optional[str] = None,
+    extra_volumes: Optional[List[str]] = None,
 ) -> tuple:
     """Build the docker/finch run arguments."""
     runtime = claude_docker.runtime
@@ -297,6 +579,10 @@ def build_docker_args(
 
     mounts.extend(["-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml"])
     mounts.extend(["-v", f"{USER_CONFIG}:/home/node/.claude.json"])
+
+    if extra_volumes:
+        for vol in extra_volumes:
+            mounts.extend(["-v", vol])
 
     env_args = ["-e", f"CLAUDE_PROJECT_NAME={project_name}"]
     if agent_mode:
@@ -318,7 +604,7 @@ def build_docker_args(
         env_args.extend(["-e", f"AGENT_INIT={init_b64}"])
 
     if agent_mode:
-        prompt = agent_prompt or "/c3po auto"
+        prompt = agent_prompt
 
     claude_args = ["-p", prompt]
     if stream or stream_raw:
@@ -655,6 +941,16 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
                 print(f"Error: Invalid environment variable format '{env_var}'. Use KEY=VALUE", file=sys.stderr)
                 return 1
 
+    once = getattr(args, 'once', False)
+
+    if config.triggers and not once:
+        return _run_trigger_loop(
+            config=config,
+            agent_stream=agent_stream,
+            agent_stream_raw=agent_stream_raw,
+            merged_env=merged_env,
+        )
+
     docker_args, stream = build_docker_args(
         prompt="",
         work_dir=config.workspace,
@@ -913,6 +1209,8 @@ Examples:
     agent_run_parser.add_argument("-e", "--env", action="append", dest="env_vars",
                                   help="Environment variable (KEY=VALUE, can be used multiple times)")
     agent_run_parser.add_argument("--prompt", help="Custom prompt to override default /c3po auto")
+    agent_run_parser.add_argument("--once", action="store_true",
+                                  help="Run container once even if triggers are configured (skips loop)")
 
     args = parser.parse_args()
 

@@ -80,3 +80,27 @@ def test_agent_config_repr():
     repr_str = repr(config)
     assert "AgentConfig" in repr_str
     assert "coder" in repr_str
+
+
+def test_agent_config_triggers_default():
+    """Test AgentConfig has empty triggers and post_run by default."""
+    config = AgentConfig(
+        name="notes",
+        workspace="/home/user/notes"
+    )
+    assert config.triggers == []
+    assert config.post_run == []
+
+
+def test_agent_config_with_triggers():
+    """Test AgentConfig with triggers and post_run."""
+    config = AgentConfig(
+        name="worker",
+        workspace="/home/user/worker",
+        triggers=[{"type": "c3po"}, {"type": "script", "command": "python3 check.py"}],
+        post_run=["bash scripts/post.sh"],
+    )
+    assert len(config.triggers) == 2
+    assert config.triggers[0] == {"type": "c3po"}
+    assert config.triggers[1] == {"type": "script", "command": "python3 check.py"}
+    assert config.post_run == ["bash scripts/post.sh"]
