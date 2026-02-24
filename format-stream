@@ -23,6 +23,7 @@ RESET = "\033[0m"
 _log_file_handle: Optional[object] = None
 _log_dir: Optional[Path] = None
 _log_enabled: bool = True
+_session_started: bool = False
 
 def generate_log_filename() -> str:
     """Generate timestamp-based log filename."""
@@ -87,6 +88,7 @@ def format_event(data: dict) -> Optional[str]:
             return f"{DIM}[{name}]{RESET} {output}"
 
     if t == "system" and sub == "init":
+        global _session_started
         mcp = [s["name"] for s in data.get("mcp_servers", []) if s.get("status") == "connected"]
         model = data.get("model", "")
         plugins = [p["name"] for p in data.get("plugins", [])]
@@ -95,7 +97,9 @@ def format_event(data: dict) -> Optional[str]:
             parts.append(f"{DIM}mcp=[{', '.join(mcp)}]{RESET}")
         if plugins:
             parts.append(f"{DIM}plugins=[{', '.join(plugins)}]{RESET}")
-        return f"{CYAN}▶ Session started{RESET}  {' '.join(parts)}"
+        label = "▶ Session started" if not _session_started else "▶ Session resumed"
+        _session_started = True
+        return f"{CYAN}{label}{RESET}  {' '.join(parts)}"
 
     if t == "assistant":
         msg = data.get("message", {})
