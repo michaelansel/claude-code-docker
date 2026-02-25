@@ -295,6 +295,53 @@ def _c3po_unregister(agent_id: str, url: str, headers: dict) -> None:
         pass
 
 
+def _c3po_claim_name(config: "AgentConfig") -> Optional[str]:
+    """Run c3po-claim-name inside a lightweight container. Returns agent_id or None."""
+    runtime = claude_docker.runtime
+
+    mounts = [
+        "-v", f"{CONFIG_DIR}:/home/node/.claude",
+        "-v", f"{USER_CONFIG}:/home/node/.claude.json",
+    ]
+
+    env_args = []
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        env_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={os.environ['CLAUDE_CODE_OAUTH_TOKEN']}"])
+    elif TOKEN_FILE.exists():
+        env_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={TOKEN_FILE.read_text().strip()}"])
+
+    script = (
+        'SCRIPT=$(find ~/.claude/plugins -path "*/c3po*/scripts/c3po-claim-name" -print 2>/dev/null | sort -V | tail -1); '
+        'if [ -z "$SCRIPT" ]; then '
+        '  claude plugin marketplace update michaelansel 2>/dev/null || true; '
+        '  claude plugin update c3po@michaelansel 2>/dev/null || true; '
+        '  SCRIPT=$(find ~/.claude/plugins -path "*/c3po*/scripts/c3po-claim-name" -print 2>/dev/null | sort -V | tail -1); '
+        'fi; '
+        'if [ -z "$SCRIPT" ]; then echo "c3po-claim-name not found" >&2; exit 1; fi; '
+        'python3 "$SCRIPT" "$1"'
+    )
+
+    cmd = [
+        runtime, "run", "--rm",
+        *env_args, *mounts,
+        "--entrypoint", "bash",
+        IMAGE_NAME,
+        "-c", script, "_", config.name,
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            return lines[-1] if lines else None
+        if result.stderr.strip():
+            for line in result.stderr.strip().split('\n'):
+                print(f"  {line}", file=sys.stderr)
+        return None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def _c3po_wait_thread(agent_id: str, url: str, headers: dict,
                       done_event: threading.Event, stop_event: threading.Event) -> None:
     """Thread function: long-poll C-3PO inbox until a message is pending."""
@@ -458,6 +505,17 @@ def _run_trigger_loop(
 
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
+
+    # Cold-start: claim agent name so c3po trigger works on first wait
+    if config.wait_first and any(t.get("type") == "c3po" for t in config.triggers):
+        print("Claiming agent name for c3po trigger...", file=sys.stderr)
+        claimed = _c3po_claim_name(config)
+        if claimed:
+            agent_id = claimed
+            print(f"Claimed: {agent_id}", file=sys.stderr)
+        else:
+            print("Warning: could not claim agent name; "
+                  "c3po trigger may not work until first container run", file=sys.stderr)
 
     while True:
         if not first_run or config.wait_first:

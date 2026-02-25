@@ -87,6 +87,8 @@ myagent:
 
 With `wait_first: true`, the agent waits for a trigger before every run, including the first. Use this when the agent has no internal state to process on startup and should only wake on external events.
 
+When `wait_first: true` is combined with a `c3po` trigger, claude-docker automatically runs a lightweight container on startup to claim the agent's name in c3po (registering it as offline). This ensures messages sent before the first container run are queued and delivered correctly. Requires c3po plugin >= 0.10.8.
+
 ## Session Memory
 
 Trigger-based agents start each run with a fresh Claude session — no memory of previous runs. This is by design: it keeps context windows small and prevents quality degradation over time.
