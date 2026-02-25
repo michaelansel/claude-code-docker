@@ -29,31 +29,18 @@ notes: ~/Documents/Notes
 #     - "source ~/venv/bin/activate"
 #     - "git pull origin main"
 #
-# Trigger loop — claude-docker manages the restart loop host-side (zero idle tokens).
-# The container runs once per trigger, then exits. Suitable for task-processor agents
-# where each trigger is independent. NOT suitable for conversational agents needing
-# multi-turn context (each container run starts with no session memory).
-# Agents should document work to files/git before exiting.
-#
-# worker:
-#   workspace: ~/Code/worker
-#   prompt: "Check your inbox and handle any pending tasks."
-#   triggers:
-#     - type: c3po          # fires when C-3PO inbox has messages
+# Trigger loop — agent wakes only when a trigger fires (zero idle token cost).
+# See docs/agent-mode.md for the full guide, including migration from c3po auto.
 #
 # ithaca:
 #   workspace: ~/Code/ithaca
-#   prompt: "Process pending C-3PO messages and work on the highest-priority ready items. Generate a session report before stopping."
+#   prompt: "Check your c3po inbox and handle any pending tasks. Commit your work before exiting."
 #   triggers:
-#     - type: c3po
+#     - type: c3po          # fires when c3po inbox has messages
 #     - type: script
-#       command: python3 lib/wait-for-graph.py   # relative to workspace; exits 0 when ready
+#       command: python3 lib/check-queue.py   # fires on exit 0; retries with backoff otherwise
 #   post_run:
-#     - bash scripts/post-session.sh   # runs after each container exit, relative to workspace
+#     - bash scripts/post-session.sh
 #
-# Trigger types:
-#   c3po   — long-poll C-3PO inbox; fires when a message is pending
-#   script — run command (cwd=workspace); fires when exit 0; nonzero retries with backoff
-#
-# --once flag: run the container once without entering the loop, for debugging:
+# --once flag: run once without the loop (useful for debugging):
 #   claude-docker agent run ithaca --once
