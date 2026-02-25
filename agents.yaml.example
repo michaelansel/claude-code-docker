@@ -30,17 +30,19 @@ notes: ~/Documents/Notes
 #     - "git pull origin main"
 #
 # Trigger loop — agent wakes only when a trigger fires (zero idle token cost).
-# See docs/agent-mode.md for the full guide, including migration from c3po auto.
+# Claude runs once per trigger, does its work, then exits. claude-docker restarts
+# it on the next trigger. Each run starts with a fresh session (no memory of
+# previous runs). See docs/agent-mode.md for the full guide and migration steps.
 #
 # ithaca:
 #   workspace: ~/Code/ithaca
 #   prompt: "Check your c3po inbox and handle any pending tasks. Commit your work before exiting."
 #   triggers:
-#     - type: c3po          # fires when c3po inbox has messages
+#     - type: c3po             # fires when a c3po message is waiting in the inbox
 #     - type: script
-#       command: python3 lib/check-queue.py   # fires on exit 0; retries with backoff otherwise
+#       command: python3 lib/check-queue.py  # fires on exit 0; nonzero retries with backoff
 #   post_run:
-#     - bash scripts/post-session.sh
+#     - bash scripts/post-session.sh  # runs on the host after each container exit
 #
-# --once flag: run once without the loop (useful for debugging):
+# --once flag: skip the trigger loop and run the container once (useful for debugging):
 #   claude-docker agent run ithaca --once
