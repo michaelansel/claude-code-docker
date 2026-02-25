@@ -186,6 +186,7 @@ class AgentConfig:
     prompt: Optional[str] = None
     triggers: List[dict] = field(default_factory=list)
     post_run: List[str] = field(default_factory=list)
+    wait_first: bool = False
 
 
 def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
@@ -215,6 +216,7 @@ def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
             prompt=raw.get("prompt"),
             triggers=raw.get("triggers", []) or [],
             post_run=raw.get("post_run", []) or [],
+            wait_first=bool(raw.get("wait_first", False)),
         )
     return None
 
@@ -458,7 +460,7 @@ def _run_trigger_loop(
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     while True:
-        if not first_run:
+        if not first_run or config.wait_first:
             _wait_for_any_trigger(config, agent_id)
         first_run = False
 

@@ -70,6 +70,23 @@ ithaca:
 
 Failures are logged but the loop continues.
 
+### wait_first
+
+By default, the trigger loop runs the container once immediately on startup before waiting for the first trigger. This is useful for agents that maintain an internal work queue — they can drain it on boot without waiting for an external event.
+
+For purely reactive agents (e.g., those that only respond to c3po messages), this first run is wasted. Set `wait_first: true` to skip it:
+
+```yaml
+myagent:
+  workspace: ~/Code/myproject
+  prompt: "Check your c3po inbox and handle any pending tasks. Commit your work before exiting."
+  wait_first: true
+  triggers:
+    - type: c3po
+```
+
+With `wait_first: true`, the agent waits for a trigger before every run, including the first. Use this when the agent has no internal state to process on startup and should only wake on external events.
+
 ## Session Memory
 
 Trigger-based agents start each run with a fresh Claude session — no memory of previous runs. This is by design: it keeps context windows small and prevents quality degradation over time.

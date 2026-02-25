@@ -44,5 +44,16 @@ notes: ~/Documents/Notes
 #   post_run:
 #     - bash scripts/post-session.sh  # runs on the host after each container exit
 #
+# wait_first — skip the initial container run and wait for a trigger before the first run.
+# Use this for purely reactive agents (e.g. c3po-only) that have no internal work queue to
+# drain on startup. Without wait_first, the first run always starts immediately.
+#
+# myagent:
+#   workspace: ~/Code/myproject
+#   prompt: "Check your c3po inbox and handle any pending tasks. Commit your work before exiting."
+#   wait_first: true
+#   triggers:
+#     - type: c3po
+#
 # --once flag: skip the trigger loop and run the container once (useful for debugging):
 #   claude-docker agent run ithaca --once
