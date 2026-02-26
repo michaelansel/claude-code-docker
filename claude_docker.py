@@ -357,15 +357,16 @@ def _c3po_wait_thread(agent_id: str, url: str, headers: dict,
             try:
                 with urllib.request.urlopen(req, timeout=310) as resp:
                     data = json.loads(resp.read())
+                    retry_after = int(resp.headers.get("Retry-After", "15"))
                     status = data.get("status")
                     if status == "received":
                         done_event.set()
                         return
                     elif status == "retry":
-                        # Coordinator restarting; Retry-After is typically 15s
+                        # Coordinator restarting; honour Retry-After header
                         if stop_event.is_set():
                             return
-                        time.sleep(15)
+                        time.sleep(retry_after)
                     # status == "timeout": no messages, loop again
             except urllib.error.HTTPError:
                 if stop_event.is_set():
