@@ -524,7 +524,10 @@ def _run_trigger_loop(
         return 1
 
     # PID-scoped so concurrent invocations never share an agent ID file.
-    agent_id_path = agents_dir / f"{config.name}-agent-id-{os.getpid()}"
+    # Placed inside CONFIG_DIR (already mounted as ~/.claude in the container)
+    # to avoid bind-mounting a separate file, which has UID permission issues
+    # with Finch/Lima on macOS.
+    agent_id_path = CONFIG_DIR / f".agent-id-{os.getpid()}"
 
     agent_id: Optional[str] = None
     first_run = True
@@ -567,13 +570,13 @@ def _run_trigger_loop(
             _wait_for_any_trigger(config, agent_id)
         first_run = False
 
-        # Clear agent ID file before each run; world-writable so container's node user can write
+        # Clear agent ID file before each run (lives inside CONFIG_DIR, already mounted)
         agent_id_path.write_text("")
-        agent_id_path.chmod(0o666)
 
-        # Pass agent ID file path to c3po plugin and mount it
+        # Pass agent ID file path to c3po plugin — no extra volume needed since
+        # CONFIG_DIR is already mounted as /home/node/.claude inside the container
         loop_env = dict(merged_env)
-        loop_env["C3PO_AGENT_ID_FILE"] = "/tmp/claude-docker-agent-id"
+        loop_env["C3PO_AGENT_ID_FILE"] = f"/home/node/.claude/{agent_id_path.name}"
         loop_env["C3PO_KEEP_REGISTERED"] = "1"
         # Pass machine name explicitly so hook doesn't fall back to ~/.claude.json
         if "C3PO_MACHINE_NAME" not in loop_env:
@@ -586,8 +589,6 @@ def _run_trigger_loop(
                         loop_env["C3PO_MACHINE_NAME"] = machine_name
                 except Exception:
                     pass
-        extra_volumes = [f"{agent_id_path}:/tmp/claude-docker-agent-id"]
-
         docker_args, stream = build_docker_args(
             prompt="",
             work_dir=config.workspace,
@@ -599,7 +600,6 @@ def _run_trigger_loop(
             stream=agent_stream,
             stream_raw=agent_stream_raw,
             agent_prompt=config.prompt,
-            extra_volumes=extra_volumes,
         )
 
         run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
