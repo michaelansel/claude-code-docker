@@ -567,13 +567,25 @@ def _run_trigger_loop(
             _wait_for_any_trigger(config, agent_id)
         first_run = False
 
-        # Clear agent ID file before each run
+        # Clear agent ID file before each run; world-writable so container's node user can write
         agent_id_path.write_text("")
+        agent_id_path.chmod(0o666)
 
         # Pass agent ID file path to c3po plugin and mount it
         loop_env = dict(merged_env)
         loop_env["C3PO_AGENT_ID_FILE"] = "/tmp/claude-docker-agent-id"
         loop_env["C3PO_KEEP_REGISTERED"] = "1"
+        # Pass machine name explicitly so hook doesn't fall back to ~/.claude.json
+        if "C3PO_MACHINE_NAME" not in loop_env:
+            creds_file = CONFIG_DIR / "c3po-credentials.json"
+            if creds_file.exists():
+                try:
+                    creds = json.loads(creds_file.read_text())
+                    machine_name = creds.get("machine_name")
+                    if machine_name:
+                        loop_env["C3PO_MACHINE_NAME"] = machine_name
+                except Exception:
+                    pass
         extra_volumes = [f"{agent_id_path}:/tmp/claude-docker-agent-id"]
 
         docker_args, stream = build_docker_args(
@@ -930,11 +942,16 @@ def cmd_shell(args: argparse.Namespace) -> int:
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
         build_image(runtime, no_cache=cli_update)
 
+    # For interactive shell, use the host's ~/.claude.json so Claude sees
+    # numStartups and onboarding markers, avoiding the first-run init flow.
+    host_claude_json = Path.home() / ".claude.json"
+    shell_claude_json = host_claude_json if host_claude_json.exists() else USER_CONFIG
+
     shell_mounts = [
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
         "-v", f"{os.getcwd()}:/workspace",
         "-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml",
-        "-v", f"{USER_CONFIG}:/home/node/.claude.json",
+        "-v", f"{shell_claude_json}:/home/node/.claude.json",
     ]
 
     if CREDENTIALS.exists():
@@ -945,6 +962,18 @@ def cmd_shell(args: argparse.Namespace) -> int:
         shell_env.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={os.environ['CLAUDE_CODE_OAUTH_TOKEN']}"])
     elif TOKEN_FILE.exists():
         shell_env.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={TOKEN_FILE.read_text().strip()}"])
+
+    # Pass C3PO_MACHINE_NAME explicitly so the hook doesn't fall back to reading ~/.claude.json,
+    # which may have a different machine name (e.g. host vs docker).
+    creds_file = CONFIG_DIR / "c3po-credentials.json"
+    if creds_file.exists():
+        try:
+            creds = json.loads(creds_file.read_text())
+            machine_name = creds.get("machine_name")
+            if machine_name:
+                shell_env.extend(["-e", f"C3PO_MACHINE_NAME={machine_name}"])
+        except Exception:
+            pass
 
     cmd = [
         runtime, "run", "--rm", "-it",
