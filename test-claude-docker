@@ -907,7 +907,7 @@ else
 fi
 teardown
 
-echo "=== trigger loop agent ID file is world-writable before container run ==="
+echo "=== trigger loop agent ID file has others-write bit (0o666, not umask-stripped 0o644) ==="
 setup
 expected_hash=$(current_build_hash)
 cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
@@ -927,15 +927,14 @@ write_rt_stubs "$(cat <<STUB
 if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
 if [[ "\${1:-}" == "image" ]]; then exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
-# Check that the .agent-id-* file is world-writable (so container UID 1000 can write it)
+# Check actual permission bits of the agent ID file while it still exists.
+# Must have "others write" bit (002) so the container node user (UID 1000 = "others") can write.
+# -w only tells us if the stub process (owner) can write, which is always true — check bits directly.
 for arg in "\$@"; do
     if [[ "\$arg" =~ ^C3PO_AGENT_ID_FILE=/home/node/.claude/(.+)\$ ]]; then
         file="\$HOME/.claude-docker/\${BASH_REMATCH[1]}"
-        if [[ -w "\$file" ]]; then
-            echo "WRITABLE" >> "\$HOME/rt-perm.log"
-        else
-            echo "NOT_WRITABLE perm=\$(stat -f '%Mp%Lp' \"\$file\" 2>/dev/null || stat -c '%a' \"\$file\" 2>/dev/null)" >> "\$HOME/rt-perm.log"
-        fi
+        perm=\$(stat -f %Lp "\$file" 2>/dev/null || stat -c %a "\$file" 2>/dev/null)
+        echo "\$perm" >> "\$HOME/rt-perm.log"
     fi
 done
 exit 0
@@ -943,10 +942,16 @@ STUB
 )"
 timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>/dev/null || true
 if [[ -f "$TEST_DIR/rt-perm.log" ]]; then
-    perm_log=$(cat "$TEST_DIR/rt-perm.log")
-    assert_contains "agent ID file is writable" "WRITABLE" "$perm_log"
+    perm=$(cat "$TEST_DIR/rt-perm.log" | head -1 | tr -d '[:space:]')
+    if (( (8#$perm & 8#002) != 0 )); then
+        echo "  PASS: agent ID file has others-write bit (perm=$perm)"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: agent ID file missing others-write bit (perm=$perm) — umask stripped it"
+        FAIL=$((FAIL + 1))
+    fi
 else
-    echo "  FAIL: container was never run or arg not found (no rt-perm.log)"
+    echo "  FAIL: container never ran or C3PO_AGENT_ID_FILE arg not found"
     FAIL=$((FAIL + 1))
 fi
 teardown

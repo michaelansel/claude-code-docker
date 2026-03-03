@@ -574,8 +574,11 @@ def _run_trigger_loop(
         # The container's node user (UID 1000) has a different UID than the macOS
         # host user (UID 501) via Finch/Lima UID mapping, so a normal 0o644 file
         # would be read-only for the container.  0o666 lets any UID write to it.
+        # Note: os.open mode is subject to umask, so we must call chmod explicitly
+        # to guarantee the "others write" bit (umask typically strips it).
         fd = os.open(str(agent_id_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o666)
         os.close(fd)
+        os.chmod(str(agent_id_path), 0o666)  # override umask
 
         # Pass agent ID file path to c3po plugin — no extra volume needed since
         # CONFIG_DIR is already mounted as /home/node/.claude inside the container
