@@ -570,25 +570,38 @@ def _run_trigger_loop(
             _wait_for_any_trigger(config, agent_id)
         first_run = False
 
-        # Clear agent ID file before each run (lives inside CONFIG_DIR, already mounted)
-        agent_id_path.write_text("")
+        # Create/clear agent ID file with world-writable permissions.
+        # The container's node user (UID 1000) has a different UID than the macOS
+        # host user (UID 501) via Finch/Lima UID mapping, so a normal 0o644 file
+        # would be read-only for the container.  0o666 lets any UID write to it.
+        fd = os.open(str(agent_id_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o666)
+        os.close(fd)
 
         # Pass agent ID file path to c3po plugin — no extra volume needed since
         # CONFIG_DIR is already mounted as /home/node/.claude inside the container
         loop_env = dict(merged_env)
         loop_env["C3PO_AGENT_ID_FILE"] = f"/home/node/.claude/{agent_id_path.name}"
         loop_env["C3PO_KEEP_REGISTERED"] = "1"
-        # Pass machine name explicitly so hook doesn't fall back to ~/.claude.json
-        if "C3PO_MACHINE_NAME" not in loop_env:
-            creds_file = CONFIG_DIR / "c3po-credentials.json"
-            if creds_file.exists():
-                try:
-                    creds = json.loads(creds_file.read_text())
+        # Read credentials to pass machine name and coordinator URL as env vars.
+        # The credentials file may be 0o600 on the host; passing these values as
+        # env vars lets the hook authenticate even if it can't read the file.
+        creds_file = CONFIG_DIR / "c3po-credentials.json"
+        if creds_file.exists():
+            # Ensure the credentials file is readable by the container's node user.
+            # (0o600 would block UID 1000 from reading it; 0o644 allows world-read.)
+            creds_file.chmod(0o644)
+            try:
+                creds = json.loads(creds_file.read_text())
+                if "C3PO_MACHINE_NAME" not in loop_env:
                     machine_name = creds.get("machine_name")
                     if machine_name:
                         loop_env["C3PO_MACHINE_NAME"] = machine_name
-                except Exception:
-                    pass
+                if "C3PO_COORDINATOR_URL" not in loop_env:
+                    coord_url = creds.get("coordinator_url")
+                    if coord_url:
+                        loop_env["C3PO_COORDINATOR_URL"] = coord_url
+            except Exception:
+                pass
         docker_args, stream = build_docker_args(
             prompt="",
             work_dir=config.workspace,
@@ -599,7 +612,7 @@ def _run_trigger_loop(
             agent_init=config.init,
             stream=agent_stream,
             stream_raw=agent_stream_raw,
-            agent_prompt=config.prompt,
+            agent_prompt=config.prompt or "/c3po auto",
         )
 
         run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
@@ -609,8 +622,16 @@ def _run_trigger_loop(
             new_id = agent_id_path.read_text().strip()
             if new_id:
                 agent_id = new_id
-        except Exception:
-            pass
+                print(f"[c3po] Agent ID from handoff: {agent_id}", file=sys.stderr)
+            else:
+                print(
+                    "Warning: agent ID file empty after container exit. "
+                    "The c3po registration hook did not write the agent ID. "
+                    "Set C3PO_DEBUG=1 for hook diagnostic output.",
+                    file=sys.stderr,
+                )
+        except Exception as e:
+            print(f"Warning: could not read agent ID file: {e}", file=sys.stderr)
 
         # Run post_run commands (fail-open)
         for cmd in config.post_run:

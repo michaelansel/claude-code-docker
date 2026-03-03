@@ -868,6 +868,181 @@ out=$(bash "$UNDER_TEST" clean-logs 2>&1)
 assert_contains "cleans old files" "Cleaned up 2 log file(s)" "$out"
 teardown
 
+# --- trigger loop agent ID handoff tests ---
+
+echo "=== trigger loop passes C3PO_AGENT_ID_FILE inside /home/node/.claude/ ==="
+setup
+expected_hash=$(current_build_hash)
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+watcher:
+  workspace: ~/Workspace
+  prompt: "check inbox"
+  triggers:
+    - type: script
+      command: "sleep 3600"
+YAML
+mkdir -p "$TEST_DIR/Workspace"
+cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "test-machine"}
+JSON
+write_rt_stubs "$(cat <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
+if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
+echo "RT_ARGS: \$*" >> "\$HOME/rt-run.log"
+exit 0
+STUB
+)"
+timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>/dev/null || true
+if [[ -f "$TEST_DIR/rt-run.log" ]]; then
+    run_args=$(cat "$TEST_DIR/rt-run.log")
+    assert_contains "passes C3PO_AGENT_ID_FILE inside /home/node/.claude/" \
+        "C3PO_AGENT_ID_FILE=/home/node/.claude/.agent-id-" "$run_args"
+    assert_contains "passes C3PO_MACHINE_NAME from creds" "C3PO_MACHINE_NAME=test-machine" "$run_args"
+    assert_contains "passes C3PO_COORDINATOR_URL from creds" "C3PO_COORDINATOR_URL=http://localhost:9999" "$run_args"
+else
+    echo "  FAIL: container was never run (no rt-run.log)"
+    FAIL=$((FAIL + 1))
+fi
+teardown
+
+echo "=== trigger loop agent ID file is world-writable before container run ==="
+setup
+expected_hash=$(current_build_hash)
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+watcher:
+  workspace: ~/Workspace
+  prompt: "check inbox"
+  triggers:
+    - type: script
+      command: "sleep 3600"
+YAML
+mkdir -p "$TEST_DIR/Workspace"
+cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "test-machine"}
+JSON
+write_rt_stubs "$(cat <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
+if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
+# Check that the .agent-id-* file is world-writable (so container UID 1000 can write it)
+for arg in "\$@"; do
+    if [[ "\$arg" =~ ^C3PO_AGENT_ID_FILE=/home/node/.claude/(.+)\$ ]]; then
+        file="\$HOME/.claude-docker/\${BASH_REMATCH[1]}"
+        if [[ -w "\$file" ]]; then
+            echo "WRITABLE" >> "\$HOME/rt-perm.log"
+        else
+            echo "NOT_WRITABLE perm=\$(stat -f '%Mp%Lp' \"\$file\" 2>/dev/null || stat -c '%a' \"\$file\" 2>/dev/null)" >> "\$HOME/rt-perm.log"
+        fi
+    fi
+done
+exit 0
+STUB
+)"
+timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>/dev/null || true
+if [[ -f "$TEST_DIR/rt-perm.log" ]]; then
+    perm_log=$(cat "$TEST_DIR/rt-perm.log")
+    assert_contains "agent ID file is writable" "WRITABLE" "$perm_log"
+else
+    echo "  FAIL: container was never run or arg not found (no rt-perm.log)"
+    FAIL=$((FAIL + 1))
+fi
+teardown
+
+echo "=== trigger loop: stub writing agent ID is logged as handoff success ==="
+setup
+expected_hash=$(current_build_hash)
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+watcher:
+  workspace: ~/Workspace
+  prompt: "check inbox"
+  triggers:
+    - type: script
+      command: "sleep 3600"
+YAML
+mkdir -p "$TEST_DIR/Workspace"
+cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "test-machine"}
+JSON
+write_rt_stubs "$(cat <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
+if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
+# Simulate the c3po hook writing the assigned agent ID to the handoff file
+for arg in "\$@"; do
+    if [[ "\$arg" =~ ^C3PO_AGENT_ID_FILE=/home/node/.claude/(.+)\$ ]]; then
+        printf 'test-machine/watcher' > "\$HOME/.claude-docker/\${BASH_REMATCH[1]}"
+    fi
+done
+exit 0
+STUB
+)"
+out=$(timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>&1) || true
+assert_contains "agent ID handoff logged" "[c3po] Agent ID from handoff: test-machine/watcher" "$out"
+teardown
+
+echo "=== trigger loop: empty agent ID file produces warning ==="
+setup
+expected_hash=$(current_build_hash)
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+watcher:
+  workspace: ~/Workspace
+  prompt: "check inbox"
+  triggers:
+    - type: script
+      command: "sleep 3600"
+YAML
+mkdir -p "$TEST_DIR/Workspace"
+cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "test-machine"}
+JSON
+# Runtime stub does NOT write to the agent ID file (simulates hook failure)
+write_rt_stubs "$(cat <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
+if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
+exit 0
+STUB
+)"
+out=$(timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>&1) || true
+assert_contains "empty agent ID file produces warning" "agent ID file empty after container exit" "$out"
+teardown
+
+echo "=== trigger loop: c3po-credentials.json is chmod 644 before run ==="
+setup
+expected_hash=$(current_build_hash)
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+watcher:
+  workspace: ~/Workspace
+  prompt: "check inbox"
+  triggers:
+    - type: script
+      command: "sleep 3600"
+YAML
+mkdir -p "$TEST_DIR/Workspace"
+# Create credentials file with restrictive permissions (simulating setup-c3po)
+cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "test-machine"}
+JSON
+chmod 600 "$TEST_DIR/.claude-docker/c3po-credentials.json"
+write_rt_stubs "$(cat <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
+if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
+exit 0
+STUB
+)"
+timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>/dev/null || true
+actual_perms=$(stat -f "%Mp%Lp" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null \
+    || stat -c "%a" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null)
+assert_eq "creds file chmod to 644 before container run" "0644" "$actual_perms"
+teardown
+
 # --- cleanup stray test artifacts ---
 rm -f "$SCRIPT_DIR/format-stream.test-bak"
 
