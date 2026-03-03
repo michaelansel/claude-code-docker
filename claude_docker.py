@@ -126,6 +126,50 @@ def needs_rebuild(runtime: str) -> bool:
     return image_hash != build_hash()
 
 
+def needs_cli_update() -> bool:
+    """Check if a newer Claude CLI is available on npm. Returns False on any error."""
+    version_file = CONFIG_DIR / ".claude-cli-version"
+    if not version_file.exists():
+        return False
+    installed = version_file.read_text().strip()
+    if not installed:
+        return False
+    try:
+        req = urllib.request.Request(
+            "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
+            headers={"Accept": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            latest = data.get("version", "")
+    except Exception:
+        return False
+    if latest and latest != installed:
+        print(f"Claude CLI update available: {installed} -> {latest}", file=sys.stderr)
+        return True
+    return False
+
+
+def build_image(runtime: str, no_cache: bool = False) -> None:
+    """Build the Docker image and cache the installed CLI version."""
+    cmd = [runtime, "build", "--label", f"build.hash={build_hash()}", "-t", IMAGE_NAME]
+    if no_cache:
+        cmd.insert(2, "--no-cache")
+    cmd.append(str(SCRIPT_DIR))
+    subprocess.run(cmd, check=True)
+    # Cache the installed CLI version for update checks
+    result = subprocess.run(
+        [runtime, "run", "--rm", IMAGE_NAME, "--version"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        import re
+        match = re.search(r'\d+\.\d+\.\d+', result.stdout)
+        if match:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            (CONFIG_DIR / ".claude-cli-version").write_text(match.group(0))
+
+
 def load_agents(yaml_content: str = None) -> Optional[Dict]:
     """Load and parse agents.yaml with PyYAML.
 
@@ -736,6 +780,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rebuild(args: argparse.Namespace) -> int:
+    """Rebuild the container image with no cache to get latest Claude CLI."""
+    runtime = claude_docker.runtime
+    print(f"Rebuilding {IMAGE_NAME} image (no cache)...", file=sys.stderr)
+    build_image(runtime, no_cache=True)
+    print("Rebuild complete.", file=sys.stderr)
+    return 0
+
+
 def cmd_clean_logs(args: argparse.Namespace) -> int:
     """Handle clean-logs subcommand."""
     import shutil
@@ -814,14 +867,10 @@ def cmd_setup_c3po(args: argparse.Namespace) -> int:
 
     runtime = claude_docker.runtime
 
-    if needs_rebuild(runtime):
+    cli_update = needs_cli_update()
+    if needs_rebuild(runtime) or cli_update:
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
-        subprocess.run([
-            runtime, "build",
-            "--label", f"build.hash={build_hash()}",
-            "-t", IMAGE_NAME,
-            str(SCRIPT_DIR)
-        ], check=True)
+        build_image(runtime, no_cache=cli_update)
 
     machine_name = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
 
@@ -876,14 +925,10 @@ def cmd_shell(args: argparse.Namespace) -> int:
 
     runtime = claude_docker.runtime
 
-    if needs_rebuild(runtime):
+    cli_update = needs_cli_update()
+    if needs_rebuild(runtime) or cli_update:
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
-        subprocess.run([
-            runtime, "build",
-            "--label", f"build.hash={build_hash()}",
-            "-t", IMAGE_NAME,
-            str(SCRIPT_DIR)
-        ], check=True)
+        build_image(runtime, no_cache=cli_update)
 
     shell_mounts = [
         "-v", f"{CONFIG_DIR}:/home/node/.claude",
@@ -959,15 +1004,11 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
 
     # Check if -b flag forces a rebuild
     force_rebuild = "-b" in global_flags
+    cli_update = needs_cli_update()
 
-    if force_rebuild or needs_rebuild(runtime):
+    if force_rebuild or needs_rebuild(runtime) or cli_update:
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
-        subprocess.run([
-            runtime, "build",
-            "--label", f"build.hash={build_hash()}",
-            "-t", IMAGE_NAME,
-            str(SCRIPT_DIR)
-        ], check=True)
+        build_image(runtime, no_cache=not force_rebuild and cli_update)
 
     # Parse global_flags for stream settings
     agent_stream = True  # Default for agent mode
@@ -1073,19 +1114,16 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
     force_rebuild = "-b" in flags
 
     try:
-        should_rebuild = force_rebuild or needs_rebuild(runtime)
+        cli_update = needs_cli_update()
+        should_rebuild = force_rebuild or needs_rebuild(runtime) or cli_update
     except Exception as e:
         print(f"Error checking rebuild: {e}", file=sys.stderr)
         should_rebuild = True
+        cli_update = False
 
     if should_rebuild:
         print(f"Building {IMAGE_NAME} image...", file=sys.stderr)
-        subprocess.run([
-            runtime, "build",
-            "--label", f"build.hash={build_hash()}",
-            "-t", IMAGE_NAME,
-            str(SCRIPT_DIR)
-        ], check=True)
+        build_image(runtime, no_cache=not force_rebuild and cli_update)
 
 
     # Parse flags for options
@@ -1241,6 +1279,9 @@ Examples:
     # shell
     subparsers.add_parser("shell", help="Interactive shell in container")
 
+    # rebuild
+    subparsers.add_parser("rebuild", help="Rebuild image with no cache to get latest Claude CLI")
+
     # clean-logs
     clean_logs_parser = subparsers.add_parser("clean-logs", help="Clean up old session logs")
     clean_logs_parser.add_argument("--older-than", help="Delete logs older than X days (e.g., 7d, 30d)")
@@ -1283,6 +1324,8 @@ Examples:
         return cmd_setup_c3po(args)
     elif args.command == "shell":
         return cmd_shell(args)
+    elif args.command == "rebuild":
+        return cmd_rebuild(args)
     elif args.command == "clean-logs":
         return cmd_clean_logs(args)
     elif args.command == "agent":
