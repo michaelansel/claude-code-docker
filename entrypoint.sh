@@ -25,12 +25,15 @@ INSTALLED_JSON="$PLUGIN_DIR/installed_plugins.json"
 if [[ -f "$INSTALLED_JSON" ]]; then
     echo "Updating plugins..." >&2
 
-    # Discover plugin names from installed_plugins.json (not directory names,
-    # since the plugin layout uses cache/<author>/<name>/<version>/ not <name>@<mp>/)
+    # Discover user-scoped plugin names from installed_plugins.json.
+    # Project-scoped plugins are skipped: they need --scope=project and must be run
+    # from the correct project directory. Since ~/.claude is shared across all agents
+    # but all containers mount at /workspace (different actual dirs), we cannot
+    # reliably update project plugins without corrupting the wrong project's state.
     plugin_names=()
     while IFS= read -r name; do
         [[ -n "$name" ]] && plugin_names+=("$name")
-    done < <(jq -r '.plugins | keys[]' "$INSTALLED_JSON" 2>/dev/null)
+    done < <(jq -r '.plugins | to_entries[] | select(any(.value[]; .scope == "user")) | .key' "$INSTALLED_JSON" 2>/dev/null)
 
     marketplaces=()
     for plugin in "${plugin_names[@]:-}"; do

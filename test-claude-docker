@@ -591,7 +591,7 @@ echo "=== entrypoint: marketplace dedup with two plugins from same marketplace =
 entrypoint_setup
 mkdir -p "$TEST_DIR/.claude/plugins"
 cat > "$TEST_DIR/.claude/plugins/installed_plugins.json" <<'JSON'
-{"version": 2, "plugins": {"c3po@michaelansel": [{"scope": "user", "version": "0.9.2"}], "other@michaelansel": [{"scope": "user", "version": "1.0.0"}]}}
+{"version": 2, "plugins": {"c3po@michaelansel": [{"scope": "user", "version": "0.9.2"}], "other@michaelansel": [{"scope": "user", "version": "1.0.0"}], "proj-plugin@michaelansel": [{"scope": "project", "version": "1.0.0", "projectPath": "/workspace"}]}}
 JSON
 # Track claude calls
 cat > "$TEST_DIR/claude" <<'STUB'
@@ -611,7 +611,9 @@ out=$("$ENTRYPOINT" -p "hello" 2>&1)
 mp_count=$(grep -c "MARKETPLACE_UPDATE" "$TEST_DIR/claude-calls.log" 2>/dev/null || echo 0)
 plugin_count=$(grep -c "PLUGIN_UPDATE" "$TEST_DIR/claude-calls.log" 2>/dev/null || echo 0)
 assert_eq "one marketplace update call" "1" "$mp_count"
-assert_eq "two plugin update calls" "2" "$plugin_count"
+assert_eq "two plugin update calls (user-scoped only)" "2" "$plugin_count"
+# Project-scoped plugin must not be updated (would corrupt state across agents)
+assert_not_contains "project plugin not updated" "proj-plugin" "$(cat "$TEST_DIR/claude-calls.log")"
 teardown
 
 echo "=== entrypoint: c3po creds valid (200) launches claude ==="
