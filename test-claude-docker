@@ -522,24 +522,58 @@ STUB
     export PATH="$TEST_DIR:$PATH"
 }
 
-echo "=== entrypoint: no plugins dir skips updates ==="
+echo "=== entrypoint: no installed_plugins.json skips updates ==="
 entrypoint_setup
 out=$("$ENTRYPOINT" -p "hello" 2>&1)
 assert_contains "calls claude with passthrough args" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
 assert_not_contains "no updating message" "Updating plugins" "$out"
 teardown
 
-echo "=== entrypoint: with plugins calls marketplace and plugin update ==="
+echo "=== entrypoint: with installed_plugins.json calls exact plugin and marketplace names ==="
 entrypoint_setup
-mkdir -p "$TEST_DIR/.claude/plugins/c3po@michaelansel"
+mkdir -p "$TEST_DIR/.claude/plugins"
+cat > "$TEST_DIR/.claude/plugins/installed_plugins.json" <<'JSON'
+{"version": 2, "plugins": {"c3po@michaelansel": [{"scope": "user", "version": "0.9.2"}]}}
+JSON
+# Track exact claude calls
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+STUB
+chmod +x "$TEST_DIR/claude"
 out=$("$ENTRYPOINT" -p "hello" 2>&1)
 assert_contains "updating message" "Updating plugins" "$out"
-assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+# Assert exact plugin name is passed
+assert_contains "exact plugin update call" "CLAUDE_CALL: plugin update c3po@michaelansel" "$(cat "$TEST_DIR/claude-calls.log")"
+# Assert exact marketplace name is passed
+assert_contains "exact marketplace update call" "CLAUDE_CALL: plugin marketplace update michaelansel" "$(cat "$TEST_DIR/claude-calls.log")"
+# Assert claude is NOT called with a c3po@michaelansel directory path (old bug)
+assert_not_contains "no directory-based call" "CLAUDE_CALL: plugin update c3po" "$(grep -v michaelansel "$TEST_DIR/claude-calls.log" 2>/dev/null || echo '')"
+teardown
+
+echo "=== entrypoint: plugin dirs without installed_plugins.json do NOT trigger updates ==="
+# Regression test: old code scanned plugin dirs like c3po@michaelansel/ but those dirs
+# don't exist in real plugin layouts (only cache/ and marketplaces/). Without installed_plugins.json,
+# the old code silently found nothing and skipped all updates.
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude/plugins/cache/michaelansel/c3po/0.9.2"
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+STUB
+chmod +x "$TEST_DIR/claude"
+out=$("$ENTRYPOINT" -p "hello" 2>&1)
+assert_not_contains "cache dir without json does not trigger updates" "Updating plugins" "$out"
+# Also verify no plugin update was called at all (use not_contains to avoid grep -c double-output issue)
+assert_not_contains "no plugin update calls without json" "plugin update" "$(cat "$TEST_DIR/claude-calls.log" 2>/dev/null || echo '')"
 teardown
 
 echo "=== entrypoint: plugin update failure still launches claude ==="
 entrypoint_setup
-mkdir -p "$TEST_DIR/.claude/plugins/c3po@michaelansel"
+mkdir -p "$TEST_DIR/.claude/plugins"
+cat > "$TEST_DIR/.claude/plugins/installed_plugins.json" <<'JSON'
+{"version": 2, "plugins": {"c3po@michaelansel": [{"scope": "user", "version": "0.9.2"}]}}
+JSON
 # Make claude fail for plugin commands but succeed for the final exec
 cat > "$TEST_DIR/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -555,8 +589,10 @@ teardown
 
 echo "=== entrypoint: marketplace dedup with two plugins from same marketplace ==="
 entrypoint_setup
-mkdir -p "$TEST_DIR/.claude/plugins/c3po@michaelansel"
-mkdir -p "$TEST_DIR/.claude/plugins/other@michaelansel"
+mkdir -p "$TEST_DIR/.claude/plugins"
+cat > "$TEST_DIR/.claude/plugins/installed_plugins.json" <<'JSON'
+{"version": 2, "plugins": {"c3po@michaelansel": [{"scope": "user", "version": "0.9.2"}], "other@michaelansel": [{"scope": "user", "version": "1.0.0"}]}}
+JSON
 # Track claude calls
 cat > "$TEST_DIR/claude" <<'STUB'
 #!/usr/bin/env bash

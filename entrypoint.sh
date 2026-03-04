@@ -20,16 +20,22 @@ fi
 
 # --- Plugin updates (all modes) ---
 PLUGIN_DIR="$HOME/.claude/plugins"
+INSTALLED_JSON="$PLUGIN_DIR/installed_plugins.json"
 
-if [[ -d "$PLUGIN_DIR" ]] && ls "$PLUGIN_DIR"/ >/dev/null 2>&1; then
+if [[ -f "$INSTALLED_JSON" ]]; then
     echo "Updating plugins..." >&2
 
-    # Discover unique marketplace names from plugin dirs (<name>@<marketplace>)
+    # Discover plugin names from installed_plugins.json (not directory names,
+    # since the plugin layout uses cache/<author>/<name>/<version>/ not <name>@<mp>/)
+    plugin_names=()
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && plugin_names+=("$name")
+    done < <(jq -r '.plugins | keys[]' "$INSTALLED_JSON" 2>/dev/null)
+
     marketplaces=()
-    for dir in "$PLUGIN_DIR"/*/; do
-        name=$(basename "$dir")
-        if [[ "$name" == *@* ]]; then
-            mp="${name##*@}"
+    for plugin in "${plugin_names[@]:-}"; do
+        if [[ "$plugin" == *@* ]]; then
+            mp="${plugin##*@}"
             if [[ ! " ${marketplaces[*]:-} " =~ " ${mp} " ]]; then
                 marketplaces+=("$mp")
             fi
@@ -40,8 +46,7 @@ if [[ -d "$PLUGIN_DIR" ]] && ls "$PLUGIN_DIR"/ >/dev/null 2>&1; then
         claude plugin marketplace update "$mp" 2>/dev/null || true
     done
 
-    for dir in "$PLUGIN_DIR"/*/; do
-        plugin=$(basename "$dir")
+    for plugin in "${plugin_names[@]:-}"; do
         if [[ "$plugin" == *@* ]]; then
             claude plugin update "$plugin" 2>/dev/null || true
         fi
