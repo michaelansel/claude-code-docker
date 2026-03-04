@@ -29,8 +29,8 @@ setup() {
     # Fake credentials so the script doesn't bail early
     mkdir -p "$TEST_DIR/.claude"
     echo '{}' > "$TEST_DIR/.claude/.credentials.json"
-    mkdir -p "$TEST_DIR/.claude-docker"
-    # Copy agents.yaml into the fake config dir
+    mkdir -p "$TEST_DIR/.claude-docker/shared"
+    # Copy agents.yaml into the fake config dir (top-level, not shared/)
     cp "$SCRIPT_DIR/agents.yaml.example" "$TEST_DIR/.claude-docker/agents.yaml"
     # Compute expected hash so the default stub returns a matching hash
     local expected_hash
@@ -344,24 +344,24 @@ teardown
 echo "=== container-CLAUDE.md is copied to config dir ==="
 setup
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
-assert_eq "CLAUDE.md exists in config dir" "true" "$(test -f "$TEST_DIR/.claude-docker/CLAUDE.md" && echo true || echo false)"
-assert_contains "CLAUDE.md has git guidance" "Git is not configured" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
-assert_contains "CLAUDE.md has no-commit guidance" "do NOT commit" "$(cat "$TEST_DIR/.claude-docker/CLAUDE.md")"
+assert_eq "CLAUDE.md exists in shared dir" "true" "$(test -f "$TEST_DIR/.claude-docker/shared/CLAUDE.md" && echo true || echo false)"
+assert_contains "CLAUDE.md has git guidance" "Git is not configured" "$(cat "$TEST_DIR/.claude-docker/shared/CLAUDE.md" 2>/dev/null)"
+assert_contains "CLAUDE.md has no-commit guidance" "do NOT commit" "$(cat "$TEST_DIR/.claude-docker/shared/CLAUDE.md" 2>/dev/null)"
 teardown
 
 echo "=== .claude.json is auto-created when missing ==="
 setup
-# Remove any pre-existing .claude.json
-rm -f "$TEST_DIR/.claude-docker/.claude.json"
+# Remove any pre-existing .claude.json from shared/
+rm -f "$TEST_DIR/.claude-docker/shared/.claude.json"
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
-assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/.claude.json" && echo true || echo false)"
-assert_eq ".claude.json contains empty object" "{}" "$(cat "$TEST_DIR/.claude-docker/.claude.json")"
+assert_eq ".claude.json exists after run" "true" "$(test -f "$TEST_DIR/.claude-docker/shared/.claude.json" && echo true || echo false)"
+assert_eq ".claude.json contains empty object" "{}" "$(cat "$TEST_DIR/.claude-docker/shared/.claude.json" 2>/dev/null)"
 assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
 teardown
 
 echo "=== .claude.json is always mounted ==="
 setup
-echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/.claude.json"
+echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/shared/.claude.json"
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
 assert_contains "mounts .claude.json" ".claude.json:/home/node/.claude.json" "$out"
 teardown
@@ -970,7 +970,7 @@ if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 # -w only tells us if the stub process (owner) can write, which is always true — check bits directly.
 for arg in "\$@"; do
     if [[ "\$arg" =~ ^C3PO_AGENT_ID_FILE=/home/node/.claude/(.+)\$ ]]; then
-        file="\$HOME/.claude-docker/\${BASH_REMATCH[1]}"
+        file="\$HOME/.claude-docker/agents/watcher/\${BASH_REMATCH[1]}"
         perm=\$(stat -f %Lp "\$file" 2>/dev/null || stat -c %a "\$file" 2>/dev/null)
         echo "\$perm" >> "\$HOME/rt-perm.log"
     fi
@@ -1017,7 +1017,7 @@ if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 # Simulate the c3po hook writing the assigned agent ID to the handoff file
 for arg in "\$@"; do
     if [[ "\$arg" =~ ^C3PO_AGENT_ID_FILE=/home/node/.claude/(.+)\$ ]]; then
-        printf 'test-machine/watcher' > "\$HOME/.claude-docker/\${BASH_REMATCH[1]}"
+        printf 'test-machine/watcher' > "\$HOME/.claude-docker/agents/watcher/\${BASH_REMATCH[1]}"
     fi
 done
 exit 0
@@ -1084,6 +1084,222 @@ timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>/dev/null || true
 actual_perms=$(stat -f "%Mp%Lp" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null \
     || stat -c "%a" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null)
 assert_eq "creds file chmod to 644 before container run" "0644" "$actual_perms"
+teardown
+
+# --- per-agent config dir tests ---
+
+echo "=== agent run mounts per-agent dir ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
+assert_contains "mounts per-agent dir" "agents/notes:/home/node/.claude" "$out"
+assert_not_contains "does not mount shared dir as .claude" "shared:/home/node/.claude" "$out"
+teardown
+
+echo "=== direct mode mounts shared dir ==="
+setup
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
+assert_contains "mounts shared dir" "shared:/home/node/.claude" "$out"
+assert_not_contains "does not mount agents dir" "agents/" "$out"
+teardown
+
+echo "=== shell mode mounts shared dir ==="
+setup
+expected_hash=$(current_build_hash)
+write_rt_stubs "$(cat <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
+if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
+echo "RT_ARGS: \$*"
+exit 0
+STUB
+)"
+out=$(echo "" | bash "$UNDER_TEST" shell 2>&1)
+assert_contains "mounts shared dir" "shared:/home/node/.claude" "$out"
+assert_not_contains "does not mount agents dir" "agents/" "$out"
+teardown
+
+echo "=== only credential files written to agent dir ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+# Put creds at CONFIG_DIR root (canonical location)
+cat > "$TEST_DIR/.claude-docker/.oauth-token" <<'TXT'
+sk-test-token
+TXT
+cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token"}
+JSON
+echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/shared/.claude.json"
+echo '{"plugins":{}}' > "$TEST_DIR/.claude-docker/shared/settings.json"
+mkdir -p "$TEST_DIR/.claude-docker/shared/plugins/cache/michaelansel/c3po"
+echo '{"version":2,"plugins":{"c3po@michaelansel":[{"scope":"user"}]}}' \
+    > "$TEST_DIR/.claude-docker/shared/plugins/installed_plugins.json"
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
+agent_dir="$TEST_DIR/.claude-docker/agents/notes"
+assert_eq "oauth-token copied to agent dir" "true" "$(test -f "$agent_dir/.oauth-token" && echo true || echo false)"
+assert_eq "c3po-credentials.json copied to agent dir" "true" "$(test -f "$agent_dir/c3po-credentials.json" && echo true || echo false)"
+assert_eq ".claude.json pre-created in agent dir" "true" "$(test -f "$agent_dir/.claude.json" && echo true || echo false)"
+assert_eq "plugins NOT copied to agent dir" "false" "$(test -d "$agent_dir/plugins" && echo true || echo false)"
+assert_eq "settings.json NOT copied to agent dir" "false" "$(test -f "$agent_dir/settings.json" && echo true || echo false)"
+teardown
+
+echo "=== two agents have independent dirs ==="
+setup
+mkdir -p "$TEST_DIR/Workspace1" "$TEST_DIR/Workspace2"
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+agent1:
+  workspace: ~/Workspace1
+agent2:
+  workspace: ~/Workspace2
+YAML
+# Run agent1 first
+bash "$UNDER_TEST" --no-stream agent run agent1 2>/dev/null || true
+# Write a file into agent1's dir
+mkdir -p "$TEST_DIR/.claude-docker/agents/agent1/plugins"
+echo '{"v":1}' > "$TEST_DIR/.claude-docker/agents/agent1/plugins/test.json"
+# Run agent2
+bash "$UNDER_TEST" --no-stream agent run agent2 2>/dev/null || true
+# agent2's dir should not have agent1's plugin file
+assert_eq "agent2 does not have agent1 plugin file" "false" \
+    "$(test -f "$TEST_DIR/.claude-docker/agents/agent2/plugins/test.json" && echo true || echo false)"
+teardown
+
+echo "=== migration moves claude state into shared/, credentials stay at root ==="
+setup
+# Create old-layout files in CONFIG_DIR root (before migration)
+echo "sk-old-token" > "$TEST_DIR/.claude-docker/.oauth-token"
+echo '{"mcpServers":{}}' > "$TEST_DIR/.claude-docker/.claude.json"
+# Remove the shared/ dir that setup() creates so migration triggers
+rmdir "$TEST_DIR/.claude-docker/shared"
+out=$(bash "$UNDER_TEST" -p "hello" 2>&1)
+assert_eq ".claude.json migrated to shared/" "true" "$(test -f "$TEST_DIR/.claude-docker/shared/.claude.json" && echo true || echo false)"
+assert_eq "oauth-token still at root (canonical location)" "true" "$(test -f "$TEST_DIR/.claude-docker/.oauth-token" && echo true || echo false)"
+assert_eq "oauth-token also written to shared/ on launch" "true" "$(test -f "$TEST_DIR/.claude-docker/shared/.oauth-token" && echo true || echo false)"
+teardown
+
+# --- entrypoint bootstrap tests ---
+
+echo "=== entrypoint: bootstrap MCP when c3po missing from mcp list ==="
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude"
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "docker"}
+JSON
+# Mock jq
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+if [[ "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
+if [[ "$1" == "-e" ]]; then exit 1; fi
+STUB
+chmod +x "$TEST_DIR/jq"
+# Track claude calls
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+if [[ "${1:-}" == "mcp" && "${2:-}" == "list" ]]; then echo ""; exit 0; fi
+STUB
+chmod +x "$TEST_DIR/claude"
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || true
+assert_contains "bootstraps MCP" "Bootstrapping c3po MCP config" "$out"
+assert_contains "calls mcp add" "CLAUDE_CALL: mcp add c3po" "$(cat "$TEST_DIR/claude-calls.log" 2>/dev/null || echo '')"
+teardown
+
+echo "=== entrypoint: skip MCP bootstrap when c3po already in mcp list ==="
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude"
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "docker"}
+JSON
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+if [[ "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
+if [[ "$1" == "-e" ]]; then exit 1; fi
+STUB
+chmod +x "$TEST_DIR/jq"
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+if [[ "${1:-}" == "mcp" && "${2:-}" == "list" ]]; then echo "c3po: http://..."; exit 0; fi
+STUB
+chmod +x "$TEST_DIR/claude"
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || true
+assert_not_contains "no MCP bootstrap" "Bootstrapping c3po MCP config" "$out"
+assert_not_contains "no mcp add call" "CLAUDE_CALL: mcp add c3po" "$(cat "$TEST_DIR/claude-calls.log" 2>/dev/null || echo '')"
+teardown
+
+echo "=== entrypoint: bootstrap plugin when installed_plugins.json missing ==="
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude"
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "docker"}
+JSON
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+if [[ "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
+if [[ "$1" == "-e" ]]; then exit 1; fi
+STUB
+chmod +x "$TEST_DIR/jq"
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+if [[ "${1:-}" == "mcp" && "${2:-}" == "list" ]]; then echo "c3po: http://..."; exit 0; fi
+STUB
+chmod +x "$TEST_DIR/claude"
+# No installed_plugins.json — bootstrap should run
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || true
+assert_contains "installs c3po plugin" "Installing c3po plugin" "$out"
+calls=$(cat "$TEST_DIR/claude-calls.log" 2>/dev/null || echo '')
+# Should have called plugin install or update
+if echo "$calls" | grep -q "plugin update c3po@michaelansel\|plugin install c3po@michaelansel"; then
+    echo "  PASS: plugin install/update called"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: plugin install/update not called"
+    echo "    calls: $calls"
+    FAIL=$((FAIL + 1))
+fi
+teardown
+
+echo "=== entrypoint: skip plugin bootstrap when already installed ==="
+entrypoint_setup
+mkdir -p "$TEST_DIR/.claude/plugins"
+cat > "$TEST_DIR/.claude/plugins/installed_plugins.json" <<'JSON'
+{"version": 2, "plugins": {"c3po@michaelansel": [{"scope": "user", "version": "1.0.0"}]}}
+JSON
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "docker"}
+JSON
+cat > "$TEST_DIR/jq" <<'STUB'
+#!/usr/bin/env bash
+# For installed_plugins.json check
+if [[ "$1" == "-e" && "$2" == '.plugins["c3po@michaelansel"]' ]]; then exit 0; fi
+if [[ "$2" == ".coordinator_url" ]]; then echo "http://localhost:9999"; exit 0; fi
+if [[ "$2" == ".api_token" ]]; then echo "test-token"; exit 0; fi
+if [[ "$2" == '.machine_name // "docker"' ]]; then echo "docker"; exit 0; fi
+# Installed plugins extraction
+if [[ "$1" == "-r" && "$2" == '.plugins | to_entries[] | select(any(.value[]; .scope == "user")) | .key' ]]; then
+    echo "c3po@michaelansel"; exit 0
+fi
+STUB
+chmod +x "$TEST_DIR/jq"
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+if [[ "${1:-}" == "mcp" && "${2:-}" == "list" ]]; then echo "c3po: http://..."; exit 0; fi
+if [[ "${1:-}" == "plugin" ]]; then exit 0; fi
+STUB
+chmod +x "$TEST_DIR/claude"
+out=$("$ENTRYPOINT" -p "hello" 2>&1) || true
+assert_not_contains "no plugin bootstrap message" "Installing c3po plugin" "$out"
+calls=$(cat "$TEST_DIR/claude-calls.log" 2>/dev/null || echo '')
+assert_not_contains "no plugin install call" "CLAUDE_CALL: plugin install c3po" "$calls"
 teardown
 
 # --- cleanup stray test artifacts ---

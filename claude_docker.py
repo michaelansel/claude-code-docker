@@ -25,9 +25,13 @@ from typing import Dict, List, Optional
 SCRIPT_DIR = Path(__file__).resolve().parent
 IMAGE_NAME = "claude-code"
 CONFIG_DIR = Path.home() / ".claude-docker"
+SHARED_DIR = CONFIG_DIR / "shared"
 CREDENTIALS = Path.home() / ".claude" / ".credentials.json"
+# Canonical credential files live at CONFIG_DIR root (not inside shared/).
+# Both shared/ and agent dirs receive fresh copies on every launch.
 TOKEN_FILE = CONFIG_DIR / ".oauth-token"
-USER_CONFIG = CONFIG_DIR / ".claude.json"
+C3PO_CREDS_FILE = CONFIG_DIR / "c3po-credentials.json"
+USER_CONFIG = SHARED_DIR / ".claude.json"
 DOCKER_YAML_CONFIG = CONFIG_DIR / "claude-docker.yaml"
 AGENTS_FILE = CONFIG_DIR / "agents.yaml"
 
@@ -102,6 +106,75 @@ def build_hash() -> str:
     h.update((SCRIPT_DIR / "Dockerfile").read_bytes())
     h.update((SCRIPT_DIR / "entrypoint.sh").read_bytes())
     return h.hexdigest()
+
+
+def _migrate_to_shared_dir():
+    """One-time migration: move Claude state files from CONFIG_DIR root into shared/.
+
+    Credential files (.oauth-token, c3po-credentials.json) stay at CONFIG_DIR root
+    and are copied fresh into each config dir (shared/ or agent dir) on every launch.
+    If a previous migration already moved them into shared/, move them back.
+    """
+    # Move credentials back out of shared/ to CONFIG_DIR root if needed
+    for cred in [".oauth-token", "c3po-credentials.json"]:
+        in_shared = SHARED_DIR / cred
+        at_root = CONFIG_DIR / cred
+        if in_shared.exists() and not in_shared.is_dir() and not at_root.exists():
+            shutil.move(str(in_shared), str(at_root))
+
+    if SHARED_DIR.exists():
+        return
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+
+    migrate_files = [
+        # credentials are NOT migrated — they live at CONFIG_DIR root
+        ".claude.json", "settings.json", "CLAUDE.md",
+        ".credentials.json", "history.jsonl",
+    ]
+    migrate_dirs = [
+        "plugins", "session-env", "debug", "todos",
+        "projects", "backups", "shell-snapshots",
+    ]
+    for name in migrate_files:
+        src = CONFIG_DIR / name
+        if src.exists() and not src.is_dir():
+            shutil.move(str(src), str(SHARED_DIR / name))
+    for name in migrate_dirs:
+        src = CONFIG_DIR / name
+        if src.is_dir():
+            shutil.move(str(src), str(SHARED_DIR / name))
+
+
+def _write_credentials_to(config_dir: Path) -> None:
+    """Copy canonical credential files into a config dir (fresh each launch)."""
+    for cred_src, cred_name in [(TOKEN_FILE, ".oauth-token"), (C3PO_CREDS_FILE, "c3po-credentials.json")]:
+        if cred_src.exists():
+            dst = config_dir / cred_name
+            shutil.copy2(str(cred_src), str(dst))
+            dst.chmod(0o644)
+
+
+def get_agent_config_dir(agent_name: str) -> Path:
+    """Get per-agent config dir, writing credentials fresh on every launch."""
+    agent_dir = CONFIG_DIR / "agents" / agent_name
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_credentials_to(agent_dir)
+
+    # Ensure .claude.json exists so build_docker_args always bind-mounts it.
+    # Without this, claude mcp add (run by the entrypoint) writes to /home/node/.claude.json
+    # inside the container but that path is not bind-mounted for fresh dirs, so the MCP
+    # config is lost when the --rm container exits.
+    claude_json = agent_dir / ".claude.json"
+    if not claude_json.exists():
+        claude_json.write_text("{}\n")
+
+    # Copy CLAUDE.md (our file from container-CLAUDE.md, not Claude's internal state)
+    container_claude_md = SCRIPT_DIR / "container-CLAUDE.md"
+    if container_claude_md.exists():
+        (agent_dir / "CLAUDE.md").write_text(container_claude_md.read_text())
+
+    return agent_dir
 
 
 def needs_rebuild(runtime: str) -> bool:
@@ -307,7 +380,7 @@ def decode_init_commands(encoded: str) -> List[str]:
 def _load_c3po_creds():
     """Load C-3PO credentials from config files. Returns (url, headers) or (None, None)."""
     for creds_path in [
-        CONFIG_DIR / "c3po-credentials.json",
+        C3PO_CREDS_FILE,
         Path.home() / ".claude" / "c3po-credentials.json",
     ]:
         if creds_path.exists():
@@ -343,10 +416,13 @@ def _c3po_claim_name(config: "AgentConfig") -> Optional[str]:
     """Run c3po-claim-name inside a lightweight container. Returns agent_id or None."""
     runtime = claude_docker.runtime
 
+    agent_dir = get_agent_config_dir(config.name)
+    agent_claude_json = agent_dir / ".claude.json"
     mounts = [
-        "-v", f"{CONFIG_DIR}:/home/node/.claude",
-        "-v", f"{USER_CONFIG}:/home/node/.claude.json",
+        "-v", f"{agent_dir}:/home/node/.claude",
     ]
+    if agent_claude_json.exists():
+        mounts.extend(["-v", f"{agent_claude_json}:/home/node/.claude.json"])
 
     env_args = []
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -523,22 +599,18 @@ def _run_trigger_loop(
         print(f"Error: trigger loop for '{config.name}' is already running (lock: {lock_path})", file=sys.stderr)
         return 1
 
-    # PID-scoped so concurrent invocations never share an agent ID file.
-    # Placed inside CONFIG_DIR (already mounted as ~/.claude in the container)
-    # to avoid bind-mounting a separate file, which has UID permission issues
-    # with Finch/Lima on macOS.
-    agent_id_path = CONFIG_DIR / f".agent-id-{os.getpid()}"
-
     agent_id: Optional[str] = None
+    agent_id_path: Optional[Path] = None
     first_run = True
 
     url, headers = _load_c3po_creds()
 
     def _cleanup():
-        try:
-            agent_id_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if agent_id_path is not None:
+            try:
+                agent_id_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         try:
             lock_path.unlink(missing_ok=True)
         except Exception:
@@ -570,25 +642,30 @@ def _run_trigger_loop(
             _wait_for_any_trigger(config, agent_id)
         first_run = False
 
-        # Create/clear agent ID file with world-writable permissions.
+        # Get/create per-agent config dir and copy credentials into it
+        agent_config_dir = get_agent_config_dir(config.name)
+
+        # PID-scoped agent ID file placed inside the per-agent config dir
+        # (mounted as /home/node/.claude in the container).
         # The container's node user (UID 1000) has a different UID than the macOS
         # host user (UID 501) via Finch/Lima UID mapping, so a normal 0o644 file
         # would be read-only for the container.  0o666 lets any UID write to it.
         # Note: os.open mode is subject to umask, so we must call chmod explicitly
         # to guarantee the "others write" bit (umask typically strips it).
+        agent_id_path = agent_config_dir / f".agent-id-{os.getpid()}"
         fd = os.open(str(agent_id_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o666)
         os.close(fd)
         os.chmod(str(agent_id_path), 0o666)  # override umask
 
         # Pass agent ID file path to c3po plugin — no extra volume needed since
-        # CONFIG_DIR is already mounted as /home/node/.claude inside the container
+        # the agent config dir is already mounted as /home/node/.claude in the container
         loop_env = dict(merged_env)
         loop_env["C3PO_AGENT_ID_FILE"] = f"/home/node/.claude/{agent_id_path.name}"
         loop_env["C3PO_KEEP_REGISTERED"] = "1"
-        # Read credentials to pass machine name and coordinator URL as env vars.
+        # Read credentials from shared dir to pass machine name and coordinator URL as env vars.
         # The credentials file may be 0o600 on the host; passing these values as
         # env vars lets the hook authenticate even if it can't read the file.
-        creds_file = CONFIG_DIR / "c3po-credentials.json"
+        creds_file = C3PO_CREDS_FILE
         if creds_file.exists():
             # Ensure the credentials file is readable by the container's node user.
             # (0o600 would block UID 1000 from reading it; 0o644 allows world-read.)
@@ -616,6 +693,7 @@ def _run_trigger_loop(
             stream=agent_stream,
             stream_raw=agent_stream_raw,
             agent_prompt=config.prompt or "/c3po auto",
+            config_dir=agent_config_dir,
         )
 
         run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
@@ -660,7 +738,7 @@ def run_container(args: List[str], stream: bool = True, stream_raw: bool = False
 
     if stream and not stream_raw:
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, env=os.environ)
             # Find format-stream in PATH first (for tests), then SCRIPT_DIR
             format_stream_path = shutil.which("format-stream")
             if not format_stream_path:
@@ -707,12 +785,14 @@ def build_docker_args(
     stream_raw: bool,
     agent_prompt: Optional[str] = None,
     extra_volumes: Optional[List[str]] = None,
+    config_dir: Optional[Path] = None,
 ) -> tuple:
     """Build the docker/finch run arguments."""
     runtime = claude_docker.runtime
 
+    effective_config = config_dir or SHARED_DIR
     mounts = [
-        "-v", f"{CONFIG_DIR}:/home/node/.claude",
+        "-v", f"{effective_config}:/home/node/.claude",
         "-v", f"{work_dir}:/workspace",
     ]
 
@@ -720,7 +800,9 @@ def build_docker_args(
         mounts.extend(["-v", f"{CREDENTIALS}:/home/node/.claude/.credentials.json:ro"])
 
     mounts.extend(["-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml"])
-    mounts.extend(["-v", f"{USER_CONFIG}:/home/node/.claude.json"])
+    effective_user_config = effective_config / ".claude.json"
+    if effective_user_config.exists():
+        mounts.extend(["-v", f"{effective_user_config}:/home/node/.claude.json"])
 
     if extra_volumes:
         for vol in extra_volumes:
@@ -770,6 +852,8 @@ def build_docker_args(
 def cmd_setup(args: argparse.Namespace) -> int:
     """Handle setup subcommand."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_to_shared_dir()
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
 
     # Initialize DOCKER_YAML_CONFIG with default logging settings if it doesn't exist
     if not DOCKER_YAML_CONFIG.exists():
@@ -874,7 +958,7 @@ def cmd_clean_logs(args: argparse.Namespace) -> int:
                 file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
                 if file_mtime < cutoff:
                     file_size = log_file.stat().st_size
-                    log_dir.joinpath(log_file).unlink()
+                    log_file.unlink()
                     deleted_count += 1
                     total_size += file_size
             except Exception as e:
@@ -897,7 +981,8 @@ def cmd_setup_c3po(args: argparse.Namespace) -> int:
         return 1
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    _migrate_to_shared_dir()
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
@@ -943,12 +1028,18 @@ p.write_text(json.dumps(d, indent=2) + '\\n')
     subprocess.run([
         runtime, "run", "--rm", "-it",
         "--entrypoint", "bash",
-        "-v", f"{CONFIG_DIR}:/home/node/.claude",
+        "-v", f"{SHARED_DIR}:/home/node/.claude",
         "-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml",
         "-v", f"{USER_CONFIG}:/home/node/.claude.json",
         IMAGE_NAME,
         "-c", setup_script + cred_script
     ], check=True)
+
+    # Move credentials from shared/ to canonical CONFIG_DIR root
+    written_creds = SHARED_DIR / "c3po-credentials.json"
+    if written_creds.exists() and not written_creds.is_dir():
+        shutil.move(str(written_creds), str(C3PO_CREDS_FILE))
+        C3PO_CREDS_FILE.chmod(0o600)
 
     return 0
 
@@ -956,6 +1047,9 @@ p.write_text(json.dumps(d, indent=2) + '\\n')
 def cmd_shell(args: argparse.Namespace) -> int:
     """Handle shell subcommand."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_to_shared_dir()
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    _write_credentials_to(SHARED_DIR)
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
@@ -972,7 +1066,7 @@ def cmd_shell(args: argparse.Namespace) -> int:
     shell_claude_json = host_claude_json if host_claude_json.exists() else USER_CONFIG
 
     shell_mounts = [
-        "-v", f"{CONFIG_DIR}:/home/node/.claude",
+        "-v", f"{SHARED_DIR}:/home/node/.claude",
         "-v", f"{os.getcwd()}:/workspace",
         "-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml",
         "-v", f"{shell_claude_json}:/home/node/.claude.json",
@@ -989,10 +1083,9 @@ def cmd_shell(args: argparse.Namespace) -> int:
 
     # Pass C3PO_MACHINE_NAME explicitly so the hook doesn't fall back to reading ~/.claude.json,
     # which may have a different machine name (e.g. host vs docker).
-    creds_file = CONFIG_DIR / "c3po-credentials.json"
-    if creds_file.exists():
+    if C3PO_CREDS_FILE.exists():
         try:
-            creds = json.loads(creds_file.read_text())
+            creds = json.loads(C3PO_CREDS_FILE.read_text())
             machine_name = creds.get("machine_name")
             if machine_name:
                 shell_env.extend(["-e", f"C3PO_MACHINE_NAME={machine_name}"])
@@ -1020,6 +1113,10 @@ def cmd_agent_list(args: argparse.Namespace) -> int:
 
 def cmd_agent_run(args: argparse.Namespace) -> int:
     """Handle agent run subcommand."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_to_shared_dir()
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+
     agent_name = args.agent_name
 
     agents = load_agents()
@@ -1107,6 +1204,7 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
             merged_env=merged_env,
         )
 
+    agent_config_dir = get_agent_config_dir(agent_name)
     docker_args, stream = build_docker_args(
         prompt="",
         work_dir=config.workspace,
@@ -1117,7 +1215,8 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
         agent_init=config.init,
         stream=agent_stream,
         stream_raw=agent_stream_raw,
-        agent_prompt=agent_prompt
+        agent_prompt=agent_prompt,
+        config_dir=agent_config_dir,
     )
     return run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
 
@@ -1142,7 +1241,9 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
 
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    _migrate_to_shared_dir()
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    _write_credentials_to(SHARED_DIR)
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
@@ -1159,7 +1260,7 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
 
     container_claude_md = SCRIPT_DIR / "container-CLAUDE.md"
     if container_claude_md.exists():
-        (CONFIG_DIR / "CLAUDE.md").write_text(container_claude_md.read_text())
+        (SHARED_DIR / "CLAUDE.md").write_text(container_claude_md.read_text())
 
     runtime = claude_docker.runtime
 

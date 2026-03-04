@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Integration tests: require a real container runtime and built claude-code image.
+# These tests actually launch containers — no mocks at the runtime level.
+#
+# Usage: ./test-integration
+#
+# Skips automatically if finch/docker is unavailable or image not built.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME="${CLAUDE_DOCKER_RUNTIME:-finch}"
+
+PASS=0
+FAIL=0
+
+# --- helpers ---
+
+assert_eq() {
+    local name="$1" expected="$2" actual="$3"
+    if [[ "$expected" == "$actual" ]]; then
+        echo "  PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $name"
+        echo "    expected: $expected"
+        echo "    actual:   $actual"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_contains() {
+    local name="$1" needle="$2" haystack="$3"
+    if echo "$haystack" | grep -qF "$needle"; then
+        echo "  PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $name"
+        echo "    expected to contain: $needle"
+        echo "    actual output (first 5 lines):"
+        echo "$haystack" | head -5 | sed 's/^/      /'
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_not_contains() {
+    local name="$1" needle="$2" haystack="$3"
+    if ! echo "$haystack" | grep -qF "$needle"; then
+        echo "  PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $name"
+        echo "    expected NOT to contain: $needle"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# --- prereq check ---
+
+if ! command -v "$RUNTIME" >/dev/null 2>&1; then
+    echo "SKIP: $RUNTIME not found — skipping all integration tests"
+    exit 0
+fi
+
+if ! "$RUNTIME" image inspect claude-code >/dev/null 2>&1; then
+    echo "SKIP: claude-code image not built — run: $RUNTIME build -t claude-code ."
+    exit 0
+fi
+
+echo "Running integration tests with runtime: $RUNTIME"
+echo ""
+
+# Single temp dir for the whole test run; subdirs per test
+TOP_TMP=$(mktemp -d)
+trap 'rm -rf "$TOP_TMP"' EXIT
+
+# Fake claude: writes a marker and (if C3PO_AGENT_ID_FILE is set) writes the agent ID.
+# Bind-mounted over the real claude binary to intercept the entrypoint's final exec.
+FAKE_CLAUDE="$TOP_TMP/fake-claude"
+cat > "$FAKE_CLAUDE" <<'FAKECLAUDE'
+#!/usr/bin/env bash
+echo "FAKE_CLAUDE_CALLED: $*"
+# Simulate what the c3po SessionStart hook does when C3PO_AGENT_ID_FILE is set
+if [[ -n "${C3PO_AGENT_ID_FILE:-}" ]]; then
+    printf '%s' "${C3PO_MACHINE_NAME:-test-machine}/integration-test-agent" \
+        > "${C3PO_AGENT_ID_FILE}"
+fi
+FAKECLAUDE
+chmod +x "$FAKE_CLAUDE"
+
+# =============================================================================
+echo "=== container can write to mounted directory ==="
+# Verifies that the volume mount and UID mapping allow files written inside
+# the container to appear on the host. If this fails, nothing else will work.
+t="$TOP_TMP/t1"; mkdir -p "$t"
+"$RUNTIME" run --rm \
+    -v "$t:/home/node/.claude" \
+    --entrypoint bash \
+    claude-code \
+    -c 'printf "hello-from-container" > /home/node/.claude/write-test'
+assert_eq "file written in container is visible on host" \
+    "hello-from-container" "$(cat "$t/write-test" 2>/dev/null || echo MISSING)"
+
+# =============================================================================
+echo "=== pre-created 666 file is writable by container (agent ID mechanism) ==="
+# The trigger loop pre-creates the agent ID file with chmod 666 so the container
+# (node user, UID 1000) can write to it. This is the exact mechanism the agent
+# ID handoff relies on.
+t="$TOP_TMP/t2"; mkdir -p "$t"
+touch "$t/.agent-id-99999"; chmod 666 "$t/.agent-id-99999"
+"$RUNTIME" run --rm \
+    -v "$t:/home/node/.claude" \
+    --entrypoint bash \
+    claude-code \
+    -c 'printf "test-machine/test-agent" > /home/node/.claude/.agent-id-99999'
+assert_eq "container writes to pre-created 666 file" \
+    "test-machine/test-agent" "$(cat "$t/.agent-id-99999" 2>/dev/null || echo MISSING)"
+
+# =============================================================================
+echo "=== entrypoint completes bootstrap and reaches claude launch ==="
+# Runs the real entrypoint with a fake claude binary injected via bind mount.
+# Verifies the entrypoint does not abort during plugin/MCP bootstrap — the
+# exact failure mode we hit with fresh per-agent dirs.
+# CLAUDE_AGENT_MODE=0 skips the c3po credential HTTP check.
+t="$TOP_TMP/t3"; mkdir -p "$t"
+echo '{}' > "$t/.claude.json"
+printf 'sk-ant-test-token' > "$t/.oauth-token"; chmod 644 "$t/.oauth-token"
+
+output=$("$RUNTIME" run --rm \
+    -v "$t:/home/node/.claude" \
+    -v "$FAKE_CLAUDE:/home/node/.npm-global/bin/claude" \
+    -e CLAUDE_CODE_OAUTH_TOKEN=sk-ant-test-token \
+    -e CLAUDE_AGENT_MODE=0 \
+    claude-code \
+    -p "hello" 2>&1 || true)
+
+assert_contains "entrypoint reaches Launching claude" "Launching claude" "$output"
+assert_contains "fake claude was executed" "FAKE_CLAUDE_CALLED" "$output"
+
+# =============================================================================
+echo "=== agent ID is written when C3PO_AGENT_ID_FILE is set ==="
+# End-to-end test of the full agent ID handoff path:
+#   real entrypoint → fake claude → writes agent ID → host reads it
+# This is the test that would have caught every failure we hit.
+t="$TOP_TMP/t4"; mkdir -p "$t"
+echo '{}' > "$t/.claude.json"
+printf 'sk-ant-test-token' > "$t/.oauth-token"; chmod 644 "$t/.oauth-token"
+
+agent_id_file="$t/.agent-id-99999"
+touch "$agent_id_file"; chmod 666 "$agent_id_file"
+
+output=$("$RUNTIME" run --rm \
+    -v "$t:/home/node/.claude" \
+    -v "$FAKE_CLAUDE:/home/node/.npm-global/bin/claude" \
+    -e CLAUDE_CODE_OAUTH_TOKEN=sk-ant-test-token \
+    -e CLAUDE_AGENT_MODE=0 \
+    -e C3PO_AGENT_ID_FILE="/home/node/.claude/.agent-id-99999" \
+    -e C3PO_MACHINE_NAME=test-machine \
+    claude-code \
+    -p "hello" 2>&1 || true)
+
+assert_eq "agent ID written by fake claude hook" \
+    "test-machine/integration-test-agent" \
+    "$(cat "$agent_id_file" 2>/dev/null | tr -d '\n' || echo MISSING)"
+
+# =============================================================================
+echo "=== entrypoint skips plugin install when c3po already installed ==="
+# Verifies the fast path: no unnecessary network calls on subsequent launches.
+t="$TOP_TMP/t5"; mkdir -p "$t/plugins"
+echo '{}' > "$t/.claude.json"
+printf 'sk-ant-test-token' > "$t/.oauth-token"; chmod 644 "$t/.oauth-token"
+cat > "$t/plugins/installed_plugins.json" <<'JSON'
+{"version":2,"plugins":{"c3po@michaelansel":[{"scope":"user","version":"0.10.13","installPath":"/home/node/.claude/plugins/cache/michaelansel/c3po/0.10.13"}]}}
+JSON
+
+output=$("$RUNTIME" run --rm \
+    -v "$t:/home/node/.claude" \
+    -v "$FAKE_CLAUDE:/home/node/.npm-global/bin/claude" \
+    -e CLAUDE_CODE_OAUTH_TOKEN=sk-ant-test-token \
+    -e CLAUDE_AGENT_MODE=0 \
+    claude-code \
+    -p "hello" 2>&1 || true)
+
+assert_not_contains "no plugin install when already present" "Installing c3po plugin" "$output"
+assert_contains "still reaches claude launch" "Launching claude" "$output"
+
+# =============================================================================
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[[ $FAIL -eq 0 ]]
