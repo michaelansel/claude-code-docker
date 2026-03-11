@@ -304,6 +304,7 @@ class AgentConfig:
     triggers: List[dict] = field(default_factory=list)
     post_run: List[str] = field(default_factory=list)
     wait_first: bool = False
+    readonly: bool = False
 
 
 def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
@@ -334,6 +335,7 @@ def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
             triggers=raw.get("triggers", []) or [],
             post_run=raw.get("post_run", []) or [],
             wait_first=bool(raw.get("wait_first", False)),
+            readonly=bool(raw.get("readonly", False)),
         )
     return None
 
@@ -694,6 +696,7 @@ def _run_trigger_loop(
             stream_raw=agent_stream_raw,
             agent_prompt=config.prompt or "/c3po auto",
             config_dir=agent_config_dir,
+            readonly=config.readonly,
         )
 
         run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
@@ -786,6 +789,7 @@ def build_docker_args(
     agent_prompt: Optional[str] = None,
     extra_volumes: Optional[List[str]] = None,
     config_dir: Optional[Path] = None,
+    readonly: bool = False,
 ) -> tuple:
     """Build the docker/finch run arguments."""
     runtime = claude_docker.runtime
@@ -793,7 +797,7 @@ def build_docker_args(
     effective_config = config_dir or SHARED_DIR
     mounts = [
         "-v", f"{effective_config}:/home/node/.claude",
-        "-v", f"{work_dir}:/workspace",
+        "-v", f"{work_dir}:/workspace{':ro' if readonly else ''}",
     ]
 
     if CREDENTIALS.exists():
@@ -1217,6 +1221,7 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
         stream_raw=agent_stream_raw,
         agent_prompt=agent_prompt,
         config_dir=agent_config_dir,
+        readonly=config.readonly,
     )
     return run_container(docker_args, stream=stream, stream_raw=agent_stream_raw)
 
@@ -1284,6 +1289,7 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
     work_dir = None
     stream = True  # Default
     stream_raw = False
+    readonly = False
     i = 0
     while i < len(flags):
         flag = flags[i]
@@ -1307,6 +1313,9 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
             stream = False
             stream_raw = False
             i += 1
+        elif flag == "--readonly":
+            readonly = True
+            i += 1
         elif flag == "-b":
             i += 1
             continue
@@ -1327,7 +1336,8 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
         agent_env={},
         agent_init=[],
         stream=stream,
-        stream_raw=stream_raw
+        stream_raw=stream_raw,
+        readonly=readonly,
     )
 
     return run_container(docker_args, stream=stream, stream_raw=stream_raw)
@@ -1416,6 +1426,8 @@ Examples:
                         help="Disable session logging")
     parser.add_argument("--log-dir", help="Override log directory")
     parser.add_argument("-p", "--prompt", help="Prompt to run (direct mode)")
+    parser.add_argument("--readonly", action="store_true",
+                        help="Mount workspace read-only (direct mode)")
 
     # Subcommands
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
@@ -1498,7 +1510,7 @@ Examples:
             while i < len(sys.argv[1:]):
                 arg = sys.argv[i + 1]
                 if arg in ("-s", "-sj", "--stream", "--stream-json", "--no-stream", "-b", "--build",
-                           "--log-stream", "--no-log-stream", "--log-dir", "-d", "--dir"):
+                           "--log-stream", "--no-log-stream", "--log-dir", "-d", "--dir", "--readonly"):
                     global_flags.append(arg)
                     if arg in ("-d", "--dir", "--log-dir") and i + 1 < len(sys.argv[1:]):
                         global_flags.append(sys.argv[i + 2])

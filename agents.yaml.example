@@ -55,5 +55,12 @@ notes: ~/Documents/Notes
 #   triggers:
 #     - type: c3po
 #
+# readonly — mount the workspace read-only to prevent any modifications:
+#
+# reviewer:
+#   workspace: ~/Code/production
+#   readonly: true
+#   prompt: "Review the codebase for issues. Do not modify any files."
+#
 # --once flag: skip the trigger loop and run the container once (useful for debugging):
 #   claude-docker agent run ithaca --once

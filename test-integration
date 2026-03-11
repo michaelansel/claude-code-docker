@@ -163,6 +163,17 @@ assert_eq "agent ID written by fake claude hook" \
     "$(cat "$agent_id_file" 2>/dev/null | tr -d '\n' || echo MISSING)"
 
 # =============================================================================
+echo "=== readonly workspace mount prevents writes ==="
+# Verifies that :ro on the workspace volume actually enforces read-only access.
+t="$TOP_TMP/t_ro"; mkdir -p "$t"
+"$RUNTIME" run --rm \
+    -v "$t:/workspace:ro" \
+    --entrypoint bash \
+    claude-code \
+    -c 'echo "should-fail" > /workspace/write-test' 2>/dev/null || true
+assert_eq "no file created on host" "" "$(cat "$t/write-test" 2>/dev/null || echo '')"
+
+# =============================================================================
 echo "=== entrypoint skips plugin install when c3po already installed ==="
 # Verifies the fast path: no unnecessary network calls on subsequent launches.
 t="$TOP_TMP/t5"; mkdir -p "$t/plugins"

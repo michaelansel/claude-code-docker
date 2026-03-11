@@ -1096,6 +1096,36 @@ assert_contains "mounts per-agent dir" "agents/notes:/home/node/.claude" "$out"
 assert_not_contains "does not mount shared dir as .claude" "shared:/home/node/.claude" "$out"
 teardown
 
+echo "=== readonly agent mounts workspace :ro ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+notes:
+  workspace: ~/Documents/Notes
+  readonly: true
+YAML
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
+assert_contains "readonly agent mounts workspace :ro" "/workspace:ro" "$out"
+teardown
+
+echo "=== non-readonly agent mounts workspace without :ro ==="
+setup
+mkdir -p "$TEST_DIR/Documents/Notes"
+cat > "$TEST_DIR/.claude-docker/agents.yaml" <<'YAML'
+notes:
+  workspace: ~/Documents/Notes
+YAML
+out=$(bash "$UNDER_TEST" --no-stream agent run notes 2>&1)
+assert_not_contains "non-readonly agent has no :ro suffix" "/workspace:ro" "$out"
+assert_contains "non-readonly agent still mounts workspace" "/workspace" "$out"
+teardown
+
+echo "=== direct mode --readonly mounts workspace :ro ==="
+setup
+out=$(bash "$UNDER_TEST" -p "hello" --readonly 2>&1)
+assert_contains "direct --readonly mounts workspace :ro" "/workspace:ro" "$out"
+teardown
+
 echo "=== direct mode mounts shared dir ==="
 setup
 out=$(bash "$UNDER_TEST" -p "hello" 2>&1)

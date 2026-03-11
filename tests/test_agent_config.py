@@ -92,6 +92,25 @@ def test_agent_config_triggers_default():
     assert config.post_run == []
 
 
+def test_agent_config_readonly_default():
+    """Test AgentConfig readonly defaults to False."""
+    config = AgentConfig(
+        name="notes",
+        workspace="/home/user/notes"
+    )
+    assert config.readonly is False
+
+
+def test_agent_config_readonly_true():
+    """Test AgentConfig readonly=True."""
+    config = AgentConfig(
+        name="reviewer",
+        workspace="/home/user/project",
+        readonly=True,
+    )
+    assert config.readonly is True
+
+
 def test_agent_config_with_triggers():
     """Test AgentConfig with triggers and post_run."""
     config = AgentConfig(

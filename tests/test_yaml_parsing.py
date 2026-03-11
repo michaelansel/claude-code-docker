@@ -117,6 +117,27 @@ def test_get_agent_config_triggers_empty_default():
     assert config.post_run == []
 
 
+def test_get_agent_config_readonly_true():
+    """Test that readonly: true in YAML parses correctly."""
+    agents = {
+        "reviewer": {
+            "workspace": "~/Code/project",
+            "readonly": True,
+        }
+    }
+    config = get_agent_config("reviewer", agents)
+    assert config is not None
+    assert config.readonly is True
+
+
+def test_get_agent_config_readonly_default():
+    """Test that absent readonly defaults to False."""
+    agents = {"notes": "~/Documents/Notes"}
+    config = get_agent_config("notes", agents)
+    assert config is not None
+    assert config.readonly is False
+
+
 def test_load_agents_migrates_simple_format():
     """load_agents converts simple string format to dict with prompt: /c3po auto."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
