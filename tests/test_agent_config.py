@@ -123,3 +123,43 @@ def test_agent_config_with_triggers():
     assert config.triggers[0] == {"type": "c3po"}
     assert config.triggers[1] == {"type": "script", "command": "python3 check.py"}
     assert config.post_run == ["bash scripts/post.sh"]
+
+
+def test_agent_config_with_schedule_trigger():
+    """Test AgentConfig with a schedule trigger."""
+    config = AgentConfig(
+        name="daily-report",
+        workspace="/home/user/reports",
+        triggers=[{"type": "schedule", "cron": "0 6 * * *", "timezone": "America/Vancouver"}],
+    )
+    assert len(config.triggers) == 1
+    assert config.triggers[0]["type"] == "schedule"
+    assert config.triggers[0]["cron"] == "0 6 * * *"
+    assert config.triggers[0]["timezone"] == "America/Vancouver"
+
+
+def test_agent_config_with_interval_trigger():
+    """Test AgentConfig with an interval trigger."""
+    config = AgentConfig(
+        name="poller",
+        workspace="/home/user/polling",
+        triggers=[{"type": "interval", "after": "4h"}],
+    )
+    assert len(config.triggers) == 1
+    assert config.triggers[0]["type"] == "interval"
+    assert config.triggers[0]["after"] == "4h"
+
+
+def test_agent_config_with_mixed_triggers():
+    """Test AgentConfig with multiple trigger types."""
+    config = AgentConfig(
+        name="multi",
+        workspace="/home/user/work",
+        triggers=[
+            {"type": "schedule", "cron": "0 2 * * *", "timezone": "UTC"},
+            {"type": "c3po"},
+        ],
+    )
+    assert len(config.triggers) == 2
+    assert config.triggers[0]["type"] == "schedule"
+    assert config.triggers[1]["type"] == "c3po"

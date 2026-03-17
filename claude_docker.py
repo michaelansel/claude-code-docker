@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 
 # Configuration
@@ -325,7 +327,7 @@ def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
         workspace = os.path.expanduser(raw.get("workspace", ""))
         if not workspace:
             return None
-        return AgentConfig(
+        agent_config = AgentConfig(
             name=name,
             workspace=workspace,
             model=raw.get("model"),
@@ -337,6 +339,11 @@ def get_agent_config(name: str, agents: Dict) -> Optional[AgentConfig]:
             wait_first=bool(raw.get("wait_first", False)),
             readonly=bool(raw.get("readonly", False)),
         )
+        for trigger in agent_config.triggers:
+            err = _validate_trigger(trigger)
+            if err:
+                print(f"Warning: agent '{name}': {err}", file=sys.stderr)
+        return agent_config
     return None
 
 
@@ -536,6 +543,100 @@ def _script_trigger_thread(cmd: str, workspace: str,
             time.sleep(5)
 
 
+def _parse_interval_duration(s: str) -> timedelta:
+    """Parse a duration string like '30s', '15m', '4h', '1d' into a timedelta.
+
+    Raises ValueError on invalid input.
+    """
+    m = re.fullmatch(r"(\d+)(s|m|h|d)", s)
+    if not m:
+        raise ValueError(f"Invalid duration '{s}': expected format like 30s, 15m, 4h, 1d")
+    value = int(m.group(1))
+    unit = m.group(2)
+    if value == 0:
+        raise ValueError(f"Invalid duration '{s}': value must be > 0")
+    if unit == "s":
+        return timedelta(seconds=value)
+    elif unit == "m":
+        return timedelta(minutes=value)
+    elif unit == "h":
+        return timedelta(hours=value)
+    else:  # d
+        return timedelta(days=value)
+
+
+def _validate_trigger(trigger: dict) -> Optional[str]:
+    """Validate a trigger config dict. Returns None if valid, error string if not."""
+    t_type = trigger.get("type")
+    if t_type == "schedule":
+        cron = trigger.get("cron")
+        tz_name = trigger.get("timezone")
+        if not cron:
+            return "schedule trigger missing 'cron' field"
+        if not tz_name:
+            return "schedule trigger missing 'timezone' field"
+        try:
+            ZoneInfo(tz_name)
+        except Exception:
+            return f"schedule trigger has invalid timezone '{tz_name}'"
+        try:
+            from croniter import croniter
+            if not croniter.is_valid(cron):
+                return f"schedule trigger has invalid cron expression '{cron}'"
+        except ImportError:
+            pass  # skip cron syntax check if croniter not installed
+    elif t_type == "interval":
+        after = trigger.get("after")
+        if not after:
+            return "interval trigger missing 'after' field"
+        try:
+            _parse_interval_duration(after)
+        except ValueError as e:
+            return str(e)
+    elif t_type == "script":
+        if not trigger.get("command"):
+            return "script trigger missing 'command' field"
+    elif t_type == "c3po":
+        pass  # no extra fields needed
+    # Unknown types: no error (silent skip)
+    return None
+
+
+def _interval_trigger_thread(duration: timedelta, done_event: threading.Event,
+                              stop_event: threading.Event) -> None:
+    """Thread function: sleep for duration then set done_event."""
+    total_seconds = duration.total_seconds()
+    print(f"Interval trigger: waiting {duration} before next run", file=sys.stderr)
+    deadline = time.monotonic() + total_seconds
+    while not stop_event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            done_event.set()
+            return
+        time.sleep(min(1.0, remaining))
+
+
+def _schedule_trigger_thread(cron_expr: str, tz_name: str, done_event: threading.Event,
+                              stop_event: threading.Event) -> None:
+    """Thread function: sleep until next cron match then set done_event."""
+    try:
+        from croniter import croniter
+    except ImportError:
+        print("Error: croniter package not installed; cannot use schedule trigger", file=sys.stderr)
+        return
+
+    now = datetime.now(ZoneInfo(tz_name))
+    next_fire = croniter(cron_expr, now).get_next(datetime)
+    print(f"Schedule trigger: next fire at {next_fire.isoformat()}", file=sys.stderr)
+    deadline = time.monotonic() + (next_fire - now).total_seconds()
+    while not stop_event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            done_event.set()
+            return
+        time.sleep(min(1.0, remaining))
+
+
 def _wait_for_any_trigger(config: "AgentConfig", agent_id: Optional[str]) -> None:
     """Block until any configured trigger fires."""
     done_event = threading.Event()
@@ -568,6 +669,35 @@ def _wait_for_any_trigger(config: "AgentConfig", agent_id: Optional[str]) -> Non
             t = threading.Thread(
                 target=_script_trigger_thread,
                 args=(cmd, config.workspace, done_event, stop_event),
+                daemon=True,
+            )
+            threads.append(t)
+            t.start()
+        elif t_type == "schedule":
+            err = _validate_trigger(trigger)
+            if err:
+                print(f"Warning: {err}; skipping", file=sys.stderr)
+                continue
+            t = threading.Thread(
+                target=_schedule_trigger_thread,
+                args=(trigger["cron"], trigger["timezone"], done_event, stop_event),
+                daemon=True,
+            )
+            threads.append(t)
+            t.start()
+        elif t_type == "interval":
+            err = _validate_trigger(trigger)
+            if err:
+                print(f"Warning: {err}; skipping", file=sys.stderr)
+                continue
+            try:
+                duration = _parse_interval_duration(trigger["after"])
+            except ValueError as e:
+                print(f"Warning: {e}; skipping", file=sys.stderr)
+                continue
+            t = threading.Thread(
+                target=_interval_trigger_thread,
+                args=(duration, done_event, stop_event),
                 daemon=True,
             )
             threads.append(t)

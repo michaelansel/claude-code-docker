@@ -62,5 +62,36 @@ notes: ~/Documents/Notes
 #   readonly: true
 #   prompt: "Review the codebase for issues. Do not modify any files."
 #
+# Schedule trigger — wake at a wall-clock time (cron-style):
+#
+# daily-report:
+#   workspace: ~/reports
+#   prompt: "Generate the daily report."
+#   triggers:
+#     - type: schedule
+#       cron: "0 6 * * *"             # 5-field cron expression
+#       timezone: "America/Vancouver"  # required IANA timezone
+#
+# Interval trigger — wake after a fixed duration since last container exit:
+# Supports: 30s, 15m, 4h, 1d
+#
+# poller:
+#   workspace: ~/polling
+#   prompt: "Check for updates."
+#   triggers:
+#     - type: interval
+#       after: "4h"
+#
+# Mix triggers — first to fire wins:
+#
+# multi-trigger:
+#   workspace: ~/work
+#   prompt: "Handle incoming tasks or run the daily report."
+#   triggers:
+#     - type: schedule
+#       cron: "0 2 * * *"
+#       timezone: "UTC"
+#     - type: c3po          # also wake on messages
+#
 # --once flag: skip the trigger loop and run the container once (useful for debugging):
 #   claude-docker agent run ithaca --once
