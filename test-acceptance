@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Acceptance tests for claude-docker — requires a real container runtime.
+# Validates the end-to-end flow: runtime detection, image build, rebuild
+# detection, and container execution.
+#
+# Usage: ./test-acceptance
+#
+# Requires: docker, nerdctl, or finch installed and working.
+# These tests are slow (they build and run real containers).
+
+set -euo pipefail
+
+PASS=0
+FAIL=0
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# --- helpers ---
+
+assert_eq() {
+    local label="$1" expected="$2" actual="$3"
+    if [[ "$expected" == "$actual" ]]; then
+        echo "  PASS: $label"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $label"
+        echo "    expected: $expected"
+        echo "    actual:   $actual"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    if [[ "$haystack" == *"$needle"* ]]; then
+        echo "  PASS: $label"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $label"
+        echo "    expected to contain: $needle"
+        echo "    actual:              $haystack"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_not_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    if [[ "$haystack" != *"$needle"* ]]; then
+        echo "  PASS: $label"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $label"
+        echo "    expected NOT to contain: $needle"
+        echo "    actual:                  $haystack"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_exit() {
+    local label="$1" expected="$2" actual="$3"
+    if [[ "$expected" -eq "$actual" ]]; then
+        echo "  PASS: $label"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $label (exit $actual, expected $expected)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# --- detect runtime ---
+
+RUNTIME=""
+SUDO=""
+for rt in docker nerdctl finch; do
+    if command -v "$rt" &>/dev/null; then
+        RUNTIME="$rt"
+        break
+    fi
+done
+
+if [[ -z "$RUNTIME" ]]; then
+    echo "SKIP: No container runtime found. Install docker, nerdctl, or finch."
+    exit 0
+fi
+
+# Check if runtime works without sudo; if not, use sudo
+if ! $RUNTIME info &>/dev/null; then
+    if sudo $RUNTIME info &>/dev/null; then
+        SUDO="sudo"
+    else
+        echo "SKIP: $RUNTIME found but not functional (even with sudo)."
+        exit 0
+    fi
+fi
+
+echo "Using runtime: ${SUDO:+sudo }$RUNTIME"
+
+# --- cleanup from previous runs ---
+# Remove any leftover test image to start clean
+$SUDO $RUNTIME rmi claude-code-acceptance-test 2>/dev/null || true
+
+# --- tests ---
+
+echo "=== runtime detection finds real runtime ==="
+# Run the Python detection directly
+detected=$("$SCRIPT_DIR/.venv/bin/python3" -c "
+import sys; sys.path.insert(0, '$SCRIPT_DIR')
+from claude_docker import ClaudeDocker
+cd = ClaudeDocker()
+print(cd._detect_runtime())
+")
+assert_eq "detects installed runtime" "$RUNTIME" "$detected"
+
+echo "=== image build succeeds ==="
+rc=0
+# Build with a test-specific image name to avoid interfering with real usage
+build_hash=$(cat "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR/entrypoint.sh" \
+    | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+out=$($SUDO $RUNTIME build --label "build.hash=$build_hash" \
+    -t claude-code-acceptance-test "$SCRIPT_DIR" 2>&1) || rc=$?
+assert_exit "build exits zero" 0 "$rc"
+
+echo "=== image inspect returns valid JSON with build hash ==="
+rc=0
+inspect_out=$($SUDO $RUNTIME image inspect claude-code-acceptance-test 2>&1) || rc=$?
+assert_exit "image inspect exits zero" 0 "$rc"
+# Validate it's parseable JSON with the correct label
+extracted_hash=$(echo "$inspect_out" | "$SCRIPT_DIR/.venv/bin/python3" -c "
+import json, sys
+data = json.load(sys.stdin)
+if isinstance(data, list):
+    data = data[0]
+print(data.get('Config', {}).get('Labels', {}).get('build.hash', ''))
+" 2>/dev/null || echo "PARSE_FAILED")
+assert_eq "inspect JSON has correct build.hash label" "$build_hash" "$extracted_hash"
+
+echo "=== needs_rebuild returns false for fresh image ==="
+# Replicate needs_rebuild logic in shell: parse JSON from image inspect
+inspect_json=$($SUDO $RUNTIME image inspect claude-code-acceptance-test 2>/dev/null)
+extracted=$("$SCRIPT_DIR/.venv/bin/python3" -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+if isinstance(data, list): data = data[0]
+print(data.get('Config', {}).get('Labels', {}).get('build.hash', ''))
+" <<< "$inspect_json" 2>/dev/null || echo "PARSE_FAILED")
+assert_eq "fresh image hash matches" "$build_hash" "$extracted"
+
+echo "=== needs_rebuild returns true for stale image ==="
+$SUDO $RUNTIME build --label "build.hash=stale-hash-000" \
+    -t claude-code-acceptance-test "$SCRIPT_DIR" >/dev/null 2>&1
+inspect_json=$($SUDO $RUNTIME image inspect claude-code-acceptance-test 2>/dev/null)
+extracted=$("$SCRIPT_DIR/.venv/bin/python3" -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+if isinstance(data, list): data = data[0]
+print(data.get('Config', {}).get('Labels', {}).get('build.hash', ''))
+" <<< "$inspect_json" 2>/dev/null || echo "PARSE_FAILED")
+assert_eq "stale image hash does not match" "stale-hash-000" "$extracted"
+
+echo "=== container runs and exits ==="
+rc=0
+# Run a simple command inside the container (not claude itself — just verify
+# the container image works and can execute something)
+run_out=$($SUDO $RUNTIME run --rm claude-code-acceptance-test --version 2>&1) || rc=$?
+assert_exit "container exits zero" 0 "$rc"
+assert_contains "claude version output" "claude" "$run_out"
+
+# --- cleanup ---
+$SUDO $RUNTIME rmi claude-code-acceptance-test 2>/dev/null || true
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[[ "$FAIL" -eq 0 ]] || exit 1

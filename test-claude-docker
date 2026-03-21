@@ -10,7 +10,7 @@ UNDER_TEST="$SCRIPT_DIR/claude-docker"
 # --- helpers ---
 
 current_build_hash() {
-    cat "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR/entrypoint.sh" | shasum -a 256 | cut -d' ' -f1
+    cat "$SCRIPT_DIR/Dockerfile" "$SCRIPT_DIR/entrypoint.sh" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1
 }
 
 # Write a runtime stub (docker/finch) to $TEST_DIR with given body.
@@ -18,7 +18,7 @@ current_build_hash() {
 # Writes the same stub as both $TEST_DIR/docker and $TEST_DIR/finch.
 write_rt_stubs() {
     local body="$1"
-    for rt in docker finch; do
+    for rt in docker nerdctl finch; do
         echo "$body" > "$TEST_DIR/$rt"
         chmod +x "$TEST_DIR/$rt"
     done
@@ -38,8 +38,7 @@ setup() {
     # Fake container runtime stubs that log the command they would run
     write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"$expected_hash"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 echo "RT_ARGS: \$*"
 STUB
@@ -314,8 +313,7 @@ mkdir -p "$TEST_DIR/Documents/Notes"
 expected_hash=$(current_build_hash)
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then echo "STOP_CALLED: \$2" >> "\$HOME/rt-stop.log"; exit 0; fi
 # Simulate a long-running container; exit on INT/TERM like real runtime would
 if [[ "\${1:-}" == "run" ]]; then
@@ -405,8 +403,7 @@ setup
 expected_hash=$(current_build_hash)
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 echo "RT_ARGS: \$*"
 exit 0
@@ -432,8 +429,7 @@ echo "=== stale image triggers rebuild ==="
 setup
 # Override stubs to return a stale hash
 write_rt_stubs '#!/usr/bin/env bash
-if [[ "${1:-}" == "image" && "$*" == *"--format"* ]]; then echo "stale-hash-000"; exit 0; fi
-if [[ "${1:-}" == "image" ]]; then exit 0; fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"stale-hash-000"}}}]'; exit 0; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
 if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
 echo "RT_ARGS: $*"'
@@ -450,8 +446,7 @@ setup
 expected_hash=$(current_build_hash)
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 if [[ "\${1:-}" == "build" ]]; then echo "RT_BUILD: \$*"; exit 0; fi
 echo "RT_ARGS: \$*"
@@ -479,8 +474,7 @@ setup
 expected_hash=$(current_build_hash)
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 if [[ "\${1:-}" == "build" ]]; then echo "RT_BUILD: \$*"; exit 0; fi
 echo "RT_ARGS: \$*"
@@ -494,8 +488,7 @@ teardown
 echo "=== build passes correct hash label ==="
 setup
 write_rt_stubs '#!/usr/bin/env bash
-if [[ "${1:-}" == "image" && "$*" == *"--format"* ]]; then echo "stale-hash-000"; exit 0; fi
-if [[ "${1:-}" == "image" ]]; then exit 0; fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"stale-hash-000"}}}]'; exit 0; fi
 if [[ "${1:-}" == "stop" ]]; then exit 0; fi
 if [[ "${1:-}" == "build" ]]; then echo "RT_BUILD: $*"; exit 0; fi
 echo "RT_ARGS: $*"'
@@ -925,8 +918,7 @@ cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
 JSON
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 echo "RT_ARGS: \$*" >> "\$HOME/rt-run.log"
 exit 0
@@ -962,8 +954,7 @@ cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
 JSON
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 # Check actual permission bits of the agent ID file while it still exists.
 # Must have "others write" bit (002) so the container node user (UID 1000 = "others") can write.
@@ -971,7 +962,7 @@ if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 for arg in "\$@"; do
     if [[ "\$arg" =~ ^C3PO_AGENT_ID_FILE=/home/node/.claude/(.+)\$ ]]; then
         file="\$HOME/.claude-docker/agents/watcher/\${BASH_REMATCH[1]}"
-        perm=\$(stat -f %Lp "\$file" 2>/dev/null || stat -c %a "\$file" 2>/dev/null)
+        perm=\$(stat -c %a "\$file" 2>/dev/null || stat -f %Lp "\$file" 2>/dev/null)
         echo "\$perm" >> "\$HOME/rt-perm.log"
     fi
 done
@@ -1011,8 +1002,7 @@ cat > "$TEST_DIR/.claude-docker/c3po-credentials.json" <<'JSON'
 JSON
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 # Simulate the c3po hook writing the assigned agent ID to the handoff file
 for arg in "\$@"; do
@@ -1045,8 +1035,7 @@ JSON
 # Runtime stub does NOT write to the agent ID file (simulates hook failure)
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 exit 0
 STUB
@@ -1074,15 +1063,14 @@ JSON
 chmod 600 "$TEST_DIR/.claude-docker/c3po-credentials.json"
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 exit 0
 STUB
 )"
 timeout 3 bash "$UNDER_TEST" --no-stream agent run watcher 2>/dev/null || true
-actual_perms=$(stat -f "%Mp%Lp" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null \
-    || stat -c "%a" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null)
+actual_perms=$(stat -c "0%a" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null \
+    || stat -f "%Mp%Lp" "$TEST_DIR/.claude-docker/c3po-credentials.json" 2>/dev/null)
 assert_eq "creds file chmod to 644 before container run" "0644" "$actual_perms"
 teardown
 
@@ -1138,8 +1126,7 @@ setup
 expected_hash=$(current_build_hash)
 write_rt_stubs "$(cat <<STUB
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "image" && "\$*" == *"--format"* ]]; then echo "$expected_hash"; exit 0; fi
-if [[ "\${1:-}" == "image" ]]; then exit 0; fi
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then echo '[{"Config":{"Labels":{"build.hash":"'$expected_hash'"}}}]'; exit 0; fi
 if [[ "\${1:-}" == "stop" ]]; then exit 0; fi
 echo "RT_ARGS: \$*"
 exit 0

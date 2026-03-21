@@ -3,7 +3,7 @@
 ## Files
 
 - **`claude-docker`** (bash wrapper) — Shell wrapper that sets up Python venv and invokes `claude-docker.py`
-- **`claude-docker.py`** (Python) — Main CLI implementation. Parses args, resolves agents, builds/runs containers (Docker or Finch) with proper mounts for credentials and config
+- **`claude-docker.py`** (Python) — Main CLI implementation. Parses args, resolves agents, builds/runs containers (Docker, nerdctl, or Finch) with proper mounts for credentials and config
 - **`requirements.txt`** — Python dependencies (PyYAML for YAML parsing)
 - **`format-stream`** (Python) — Reads Claude's `stream-json` output from stdin and formats it with ANSI colors for terminal display. Handles system, assistant, user (tool results), and result message types.
 - **`test-claude-docker`** (bash) — Self-contained test suite with no external framework. Mocks the container runtime and `format-stream` as stub scripts in `$PATH`, validates argument parsing and command construction.

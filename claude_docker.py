@@ -44,6 +44,7 @@ class ClaudeDocker:
     def __init__(self):
         self._running_container: Optional[str] = None
         self._runtime: Optional[str] = None
+        self._needs_sudo: Optional[bool] = None
 
     @property
     def runtime(self) -> str:
@@ -52,21 +53,38 @@ class ClaudeDocker:
             self._runtime = self._detect_runtime()
         return self._runtime
 
+    @property
+    def runtime_cmd(self) -> List[str]:
+        """Return the runtime command prefix, e.g. ["sudo", "nerdctl"] or ["docker"]."""
+        rt = self.runtime
+        if self._needs_sudo is None:
+            # Check if the runtime works without sudo
+            result = subprocess.run(
+                [rt, "info"], capture_output=True, env=os.environ
+            )
+            if result.returncode != 0:
+                # Try with sudo
+                result = subprocess.run(
+                    ["sudo", "-n", rt, "info"], capture_output=True, env=os.environ
+                )
+                self._needs_sudo = result.returncode == 0
+            else:
+                self._needs_sudo = False
+        return ["sudo", rt] if self._needs_sudo else [rt]
+
     def _detect_runtime(self) -> str:
-        """Auto-select docker or finch."""
-        if subprocess.run(["which", "docker"], capture_output=True, env=os.environ).returncode == 0:
-            return "docker"
-        elif subprocess.run(["which", "finch"], capture_output=True, env=os.environ).returncode == 0:
-            return "finch"
-        else:
-            print(f"Error: No container runtime found. Install docker or finch.", file=sys.stderr)
-            sys.exit(1)
+        """Auto-select docker, nerdctl, or finch."""
+        for rt in ("docker", "nerdctl", "finch"):
+            if subprocess.run(["which", rt], capture_output=True, env=os.environ).returncode == 0:
+                return rt
+        print("Error: No container runtime found. Install docker, nerdctl, or finch.", file=sys.stderr)
+        sys.exit(1)
 
     def cleanup_container(self) -> None:
         """Stop the running container if it exists."""
         if self._running_container:
             try:
-                subprocess.run([self.runtime, "stop", self._running_container],
+                subprocess.run(self.runtime_cmd + ["stop", self._running_container],
                              capture_output=True)
             except Exception:
                 pass
@@ -84,7 +102,7 @@ claude_docker = ClaudeDocker()
 
 # Keep helper functions module-level for backward compatibility
 def detect_runtime() -> str:
-    """Auto-select docker or finch (module-level wrapper)."""
+    """Auto-select docker, nerdctl, or finch (module-level wrapper)."""
     return claude_docker.runtime
 
 
@@ -179,25 +197,37 @@ def get_agent_config_dir(agent_name: str) -> Path:
     return agent_dir
 
 
-def needs_rebuild(runtime: str) -> bool:
-    """Check if image needs rebuilding."""
+def _as_cmd(runtime) -> List[str]:
+    """Normalize runtime to a command list. Accepts str or list."""
+    return [runtime] if isinstance(runtime, str) else list(runtime)
+
+
+def needs_rebuild(runtime) -> bool:
+    """Check if image needs rebuilding.
+
+    Args:
+        runtime: Runtime name (str) or command prefix (list), e.g. "docker" or ["sudo", "nerdctl"].
+    """
     if os.environ.get("CLAUSE_DOCKER_FORCE_BUILD") == "1":
         return True
 
+    rt_cmd = _as_cmd(runtime)
     result = subprocess.run(
-        [runtime, "image", "inspect", IMAGE_NAME],
-        capture_output=True,
+        rt_cmd + ["image", "inspect", IMAGE_NAME],
+        capture_output=True, text=True,
         env=os.environ
     )
     if result.returncode != 0:
         return True
 
-    result = subprocess.run(
-        [runtime, "image", "inspect", IMAGE_NAME, "--format", "{{index .Config.Labels \"build.hash\"}}"],
-        capture_output=True, text=True,
-        env=os.environ
-    )
-    image_hash = result.stdout.strip()
+    try:
+        data = json.loads(result.stdout)
+        # docker returns a list, nerdctl may return a dict or list
+        if isinstance(data, list):
+            data = data[0]
+        image_hash = data.get("Config", {}).get("Labels", {}).get("build.hash", "")
+    except (json.JSONDecodeError, IndexError, KeyError):
+        return True
     return image_hash != build_hash()
 
 
@@ -225,16 +255,22 @@ def needs_cli_update() -> bool:
     return False
 
 
-def build_image(runtime: str, no_cache: bool = False) -> None:
-    """Build the Docker image and cache the installed CLI version."""
-    cmd = [runtime, "build", "--label", f"build.hash={build_hash()}", "-t", IMAGE_NAME]
+def build_image(runtime, no_cache: bool = False) -> None:
+    """Build the Docker image and cache the installed CLI version.
+
+    Args:
+        runtime: Runtime name (str) or command prefix (list), e.g. "docker" or ["sudo", "nerdctl"].
+    """
+    rt_cmd = _as_cmd(runtime)
+    build_args = ["build"]
     if no_cache:
-        cmd.insert(2, "--no-cache")
+        build_args.append("--no-cache")
+    cmd = rt_cmd + build_args + ["--label", f"build.hash={build_hash()}", "-t", IMAGE_NAME]
     cmd.append(str(SCRIPT_DIR))
     subprocess.run(cmd, check=True)
     # Cache the installed CLI version for update checks
     result = subprocess.run(
-        [runtime, "run", "--rm", IMAGE_NAME, "--version"],
+        rt_cmd + ["run", "--rm", IMAGE_NAME, "--version"],
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -423,7 +459,7 @@ def _c3po_unregister(agent_id: str, url: str, headers: dict) -> None:
 
 def _c3po_claim_name(config: "AgentConfig") -> Optional[str]:
     """Run c3po-claim-name inside a lightweight container. Returns agent_id or None."""
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
 
     agent_dir = get_agent_config_dir(config.name)
     agent_claude_json = agent_dir / ".claude.json"
@@ -451,7 +487,7 @@ def _c3po_claim_name(config: "AgentConfig") -> Optional[str]:
     )
 
     cmd = [
-        runtime, "run", "--rm",
+        *runtime, "run", "--rm",
         *env_args, *mounts,
         "--entrypoint", "bash",
         IMAGE_NAME,
@@ -779,9 +815,10 @@ def _run_trigger_loop(
 
         # PID-scoped agent ID file placed inside the per-agent config dir
         # (mounted as /home/node/.claude in the container).
-        # The container's node user (UID 1000) has a different UID than the macOS
-        # host user (UID 501) via Finch/Lima UID mapping, so a normal 0o644 file
-        # would be read-only for the container.  0o666 lets any UID write to it.
+        # On macOS (Finch/Lima) the host UID (501) differs from the container's
+        # node user (UID 1000), so 0o644 would be read-only for the container.
+        # On Linux the host UID is often 1000 (matching the container), but 0o666
+        # is kept for safety across all platforms.
         # Note: os.open mode is subject to umask, so we must call chmod explicitly
         # to guarantee the "others write" bit (umask typically strips it).
         agent_id_path = agent_config_dir / f".agent-id-{os.getpid()}"
@@ -800,7 +837,8 @@ def _run_trigger_loop(
         creds_file = C3PO_CREDS_FILE
         if creds_file.exists():
             # Ensure the credentials file is readable by the container's node user.
-            # (0o600 would block UID 1000 from reading it; 0o644 allows world-read.)
+            # On macOS the container UID (1000) differs from host; on Linux they
+            # often match, but 0o644 ensures readability across all platforms.
             creds_file.chmod(0o644)
             try:
                 creds = json.loads(creds_file.read_text())
@@ -859,7 +897,7 @@ def _run_trigger_loop(
 
 def run_container(args: List[str], stream: bool = True, stream_raw: bool = False) -> int:
     """Run the container and return exit code."""
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
 
     # Extract container name for cleanup
     for i, arg in enumerate(args):
@@ -867,7 +905,7 @@ def run_container(args: List[str], stream: bool = True, stream_raw: bool = False
             claude_docker._running_container = args[i + 1]
             break
 
-    cmd = [runtime] + args
+    cmd = runtime + args
 
     if stream and not stream_raw:
         try:
@@ -922,7 +960,7 @@ def build_docker_args(
     readonly: bool = False,
 ) -> tuple:
     """Build the docker/finch run arguments."""
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
 
     effective_config = config_dir or SHARED_DIR
     mounts = [
@@ -1036,7 +1074,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_rebuild(args: argparse.Namespace) -> int:
     """Rebuild the container image with no cache to get latest Claude CLI."""
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
     print(f"Rebuilding {IMAGE_NAME} image (no cache)...", file=sys.stderr)
     build_image(runtime, no_cache=True)
     print("Rebuild complete.", file=sys.stderr)
@@ -1120,7 +1158,7 @@ def cmd_setup_c3po(args: argparse.Namespace) -> int:
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
 
     cli_update = needs_cli_update()
     if needs_rebuild(runtime) or cli_update:
@@ -1160,7 +1198,7 @@ p.write_text(json.dumps(d, indent=2) + '\\n')
 """
 
     subprocess.run([
-        runtime, "run", "--rm", "-it",
+        *runtime, "run", "--rm", "-it",
         "--entrypoint", "bash",
         "-v", f"{SHARED_DIR}:/home/node/.claude",
         "-v", f"{DOCKER_YAML_CONFIG}:/home/node/claude-docker.yaml",
@@ -1187,7 +1225,7 @@ def cmd_shell(args: argparse.Namespace) -> int:
     if not USER_CONFIG.exists():
         USER_CONFIG.write_text("{}\n")
 
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
 
     cli_update = needs_cli_update()
     if needs_rebuild(runtime) or cli_update:
@@ -1227,7 +1265,7 @@ def cmd_shell(args: argparse.Namespace) -> int:
             pass
 
     cmd = [
-        runtime, "run", "--rm", "-it",
+        *runtime, "run", "--rm", "-it",
         "--entrypoint", "bash",
         *shell_env,
         *shell_mounts,
@@ -1284,7 +1322,7 @@ def cmd_agent_run(args: argparse.Namespace) -> int:
             global_flags.append(arg)
 
     project_name = agent_name
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
 
     # Check if -b flag forces a rebuild
     force_rebuild = "-b" in global_flags
@@ -1397,7 +1435,7 @@ def cmd_direct_prompt(prompt: str, args: argparse.Namespace, flags: List[str]) -
     if container_claude_md.exists():
         (SHARED_DIR / "CLAUDE.md").write_text(container_claude_md.read_text())
 
-    runtime = claude_docker.runtime
+    runtime = claude_docker.runtime_cmd
 
     # Check if -b flag forces a rebuild
     force_rebuild = "-b" in flags
@@ -1615,23 +1653,23 @@ Examples:
 
     # Determine mode and dispatch
     if args.command == "setup":
-        return cmd_setup(args)
+        sys.exit(cmd_setup(args))
     elif args.command == "setup-c3po":
-        return cmd_setup_c3po(args)
+        sys.exit(cmd_setup_c3po(args))
     elif args.command == "shell":
-        return cmd_shell(args)
+        sys.exit(cmd_shell(args))
     elif args.command == "rebuild":
-        return cmd_rebuild(args)
+        sys.exit(cmd_rebuild(args))
     elif args.command == "clean-logs":
-        return cmd_clean_logs(args)
+        sys.exit(cmd_clean_logs(args))
     elif args.command == "agent":
         if args.agent_cmd == "list":
-            return cmd_agent_list(args)
+            sys.exit(cmd_agent_list(args))
         elif args.agent_cmd == "run":
-            return cmd_agent_run(args)
+            sys.exit(cmd_agent_run(args))
         else:
             agent_parser.print_help()
-            return 2
+            sys.exit(2)
     elif args.command is None:
         if args.prompt:
             # Direct prompt mode with -p flag
@@ -1648,15 +1686,15 @@ Examples:
                 elif arg.startswith("--dir=") or arg.startswith("-d="):
                     global_flags.append(arg)
                 i += 1
-            return cmd_direct_prompt(args.prompt, args, global_flags)
+            sys.exit(cmd_direct_prompt(args.prompt, args, global_flags))
         else:
             # No subcommand and no prompt - show help
             parser.print_help()
-            return 2
+            sys.exit(2)
     else:
         # Unknown command
         parser.print_help()
-        return 2
+        sys.exit(2)
 
 
 if __name__ == "__main__":

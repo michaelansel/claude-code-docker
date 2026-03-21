@@ -1,10 +1,10 @@
 # claude-code-docker
 
-Run Claude Code inside isolated Docker/Finch containers with credential management, streaming output, and multi-agent support via c3po.
+Run Claude Code inside isolated containers with credential management, streaming output, and multi-agent support via c3po. Supports Docker, nerdctl (containerd), and Finch as container runtimes.
 
 ## Prerequisites
 
-- Docker or [Finch](https://github.com/runfinch/finch)
+- Docker, [nerdctl](https://github.com/containerd/nerdctl) (nerdctl-full bundle recommended), or [Finch](https://github.com/runfinch/finch)
 - Claude Code authentication (one of):
   - OAuth token via `claude-docker setup`
   - `CLAUDE_CODE_OAUTH_TOKEN` environment variable

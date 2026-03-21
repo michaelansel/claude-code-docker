@@ -3,13 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
 
-# Detect runtime (docker or finch)
+# Detect runtime (docker, nerdctl, or finch)
 if command -v docker &>/dev/null; then
     CONTAINER_RT=docker
+elif command -v nerdctl &>/dev/null; then
+    CONTAINER_RT=nerdctl
 elif command -v finch &>/dev/null; then
     CONTAINER_RT=finch
 else
-    echo "Error: No container runtime found. Install docker or finch." >&2
+    echo "Error: No container runtime found. Install docker, nerdctl, or finch." >&2
     exit 1
 fi
 
@@ -18,12 +20,19 @@ VENV_DIR="$SCRIPT_DIR/.venv"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
 
 setup_venv() {
+    # If the venv exists but doesn't work, recreate it
+    if [[ -d "$VENV_DIR" ]]; then
+        if ! "$VENV_DIR/bin/python3" -c "import yaml" 2>/dev/null; then
+            echo "Recreating broken virtual environment..." >&2
+            rm -rf "$VENV_DIR"
+        fi
+    fi
+
     if [[ ! -d "$VENV_DIR" ]]; then
         echo "Creating Python virtual environment..." >&2
         python3 -m venv "$VENV_DIR"
     fi
 
-    # Activate and install requirements
     source "$VENV_DIR/bin/activate"
     pip install --quiet --upgrade pip
     pip install --quiet -r "$REQUIREMENTS_FILE"

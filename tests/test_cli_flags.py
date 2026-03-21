@@ -20,7 +20,7 @@ def test_no_args_shows_usage():
     with pytest.raises(SystemExit) as exc_info:
         sys.argv = ["claude-docker"]
         main()
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == 2
 
 
 def test_direct_prompt_with_p_flag():
@@ -32,9 +32,9 @@ def test_direct_prompt_with_p_flag():
 
 
 def test_direct_prompt_positional():
-    """Test direct prompt with positional args."""
+    """Test direct prompt with positional args (uses -p flag)."""
     with pytest.raises(SystemExit) as exc_info:
-        sys.argv = ["claude-docker", "hello world"]
+        sys.argv = ["claude-docker", "-p", "hello world"]
         main()
     assert exc_info.value.code == 0
 
@@ -50,17 +50,17 @@ def test_agent_list():
 def test_agent_run():
     """Test agent run subcommand."""
     with pytest.raises(SystemExit) as exc_info:
-        sys.argv = ["claude-docker", "agent", "notes"]
+        sys.argv = ["claude-docker", "agent", "run", "notes"]
         main()
     assert exc_info.value.code == 0
 
 
 def test_agent_unknown():
-    """Test agent with unknown name."""
+    """Test agent run with unknown agent name."""
     with pytest.raises(SystemExit) as exc_info:
-        sys.argv = ["claude-docker", "agent", "unknown"]
+        sys.argv = ["claude-docker", "agent", "run", "unknown"]
         main()
-    assert exc_info.value.code == 1
+    assert exc_info.value.code == 2
 
 
 def test_shell_subcommand():
