@@ -1,5 +1,6 @@
 """Test YAML parsing for agents.yaml."""
 
+import os
 import pytest
 import tempfile
 import yaml
@@ -47,7 +48,7 @@ def test_get_agent_config_simple():
     config = get_agent_config("notes", agents)
     assert config is not None
     assert config.name == "notes"
-    assert config.workspace == "/Users/michaelansel/Documents/Notes"
+    assert config.workspace == os.path.expanduser("~/Documents/Notes")
     assert config.model is None
     assert config.env == {}
     assert config.init == []
@@ -66,7 +67,7 @@ def test_get_agent_config_block():
     config = get_agent_config("coder", agents)
     assert config is not None
     assert config.name == "coder"
-    assert config.workspace == "/Users/michaelansel/Code/project"
+    assert config.workspace == os.path.expanduser("~/Code/project")
     assert config.model == "opus"
     assert config.env == {"VAR": "value"}
     assert config.init == ["cmd1", "cmd2"]

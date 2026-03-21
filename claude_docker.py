@@ -619,8 +619,8 @@ def _validate_trigger(trigger: dict) -> Optional[str]:
             from croniter import croniter
             if not croniter.is_valid(cron):
                 return f"schedule trigger has invalid cron expression '{cron}'"
-        except ImportError:
-            pass  # skip cron syntax check if croniter not installed
+        except Exception:
+            pass  # skip cron syntax check if croniter not available
     elif t_type == "interval":
         after = trigger.get("after")
         if not after:
@@ -657,8 +657,8 @@ def _schedule_trigger_thread(cron_expr: str, tz_name: str, done_event: threading
     """Thread function: sleep until next cron match then set done_event."""
     try:
         from croniter import croniter
-    except ImportError:
-        print("Error: croniter package not installed; cannot use schedule trigger", file=sys.stderr)
+    except Exception:
+        print("Error: croniter package not available; cannot use schedule trigger", file=sys.stderr)
         return
 
     now = datetime.now(ZoneInfo(tz_name))
