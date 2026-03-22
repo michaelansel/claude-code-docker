@@ -732,6 +732,56 @@ assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p h
 assert_not_contains "no creds check" "Checking c3po credentials" "$out"
 teardown
 
+echo "=== entrypoint: X-Machine-Name mismatch triggers reconfiguration ==="
+entrypoint_setup
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "oldhost"}
+JSON
+# Stale .claude.json with old machine name
+mkdir -p "$TEST_DIR/.claude"
+cat > "$TEST_DIR/.claude.json" <<'JSON'
+{"mcpServers": {"c3po": {"headers": {"X-Machine-Name": "oldhost"}}}}
+JSON
+export C3PO_MACHINE_NAME="newhost"
+# Mock claude: mcp list reports c3po configured; log mcp remove calls; final exec prints args
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+if [[ "${1:-}" == "mcp" && "${2:-}" == "list" ]]; then echo "c3po"; exit 0; fi
+if [[ "${1:-}" == "mcp" && "${2:-}" == "remove" ]]; then exit 0; fi
+if [[ "${1:-}" == "mcp" && "${2:-}" == "add" ]]; then exit 0; fi
+echo "CLAUDE_ARGS: $*"
+STUB
+chmod +x "$TEST_DIR/claude"
+out=$("$ENTRYPOINT" -p "hello" 2>&1)
+assert_contains "reconfiguring message shown" "reconfiguring" "$out"
+assert_contains "mcp remove called" "CLAUDE_CALL: mcp remove c3po" "$(cat "$TEST_DIR/claude-calls.log")"
+assert_contains "calls claude after reconfigure" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+unset C3PO_MACHINE_NAME
+teardown
+
+echo "=== entrypoint: X-Machine-Name matches skips reconfiguration ==="
+entrypoint_setup
+cat > "$TEST_DIR/.claude/c3po-credentials.json" <<'JSON'
+{"coordinator_url": "http://localhost:9999", "api_token": "test-token", "machine_name": "myhost"}
+JSON
+cat > "$TEST_DIR/.claude.json" <<'JSON'
+{"mcpServers": {"c3po": {"headers": {"X-Machine-Name": "myhost"}}}}
+JSON
+# Mock claude: mcp list reports c3po configured; log all calls
+cat > "$TEST_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_CALL: $*" >> "$HOME/claude-calls.log"
+if [[ "${1:-}" == "mcp" && "${2:-}" == "list" ]]; then echo "c3po"; exit 0; fi
+echo "CLAUDE_ARGS: $*"
+STUB
+chmod +x "$TEST_DIR/claude"
+out=$("$ENTRYPOINT" -p "hello" 2>&1)
+assert_not_contains "no reconfiguring message" "reconfiguring" "$out"
+assert_not_contains "mcp remove not called" "mcp remove" "$(cat "$TEST_DIR/claude-calls.log" 2>/dev/null || echo '')"
+assert_contains "calls claude" "CLAUDE_ARGS: --dangerously-skip-permissions -p hello" "$out"
+teardown
+
 echo "=== block format agent with model ==="
 setup
 # Write a mixed agents.yaml with block format

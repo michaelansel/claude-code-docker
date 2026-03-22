@@ -42,6 +42,16 @@ fi
 # --- Validate c3po MCP config (all modes) ---
 CREDS_FILE="$HOME/.claude/c3po-credentials.json"
 if [[ -f "$CREDS_FILE" ]]; then
+    # If c3po is already configured, verify X-Machine-Name still matches credentials
+    if claude mcp list 2>/dev/null | grep -q "c3po"; then
+        _machine_name=$(jq -r '.machine_name // "docker"' "$CREDS_FILE")
+        _effective_machine="${C3PO_MACHINE_NAME:-$_machine_name}"
+        _current_machine=$(jq -r '.mcpServers.c3po.headers["X-Machine-Name"] // ""' "$HOME/.claude.json" 2>/dev/null || echo "")
+        if [[ "$_current_machine" != "$_effective_machine" ]]; then
+            echo "C-3PO X-Machine-Name mismatch ($_current_machine != $_effective_machine) — reconfiguring..." >&2
+            claude mcp remove c3po 2>/dev/null || true
+        fi
+    fi
     # Check if c3po MCP server is configured
     if ! claude mcp list 2>/dev/null | grep -q "c3po"; then
         echo "Bootstrapping c3po MCP config..." >&2
